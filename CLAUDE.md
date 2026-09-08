@@ -34,11 +34,11 @@ Each pattern gets its own file. Files link to each other where patterns interact
 This is intentionally a graph, not a linear document.
 
 ### Layers
-- `bronze/` — source extraction patterns
-- `silver/` — transformation and conforming patterns  
-- `gold/` — dimensional model load patterns
-- `semantic-model/` — Power BI semantic model patterns
-- `cross-cutting/` — watermarks, delete detection, schema change, key management
+- `Bronze/` — source extraction patterns
+- `Silver/` — transformation and conforming patterns  
+- `Gold/` — dimensional model load patterns
+- `Semantic Model/` — Power BI semantic model patterns
+- `Cross-Cutting/` — watermarks, delete detection, schema change, key management
 
 ### Status convention
 Each file has a status in its frontmatter:
@@ -70,7 +70,7 @@ does. Describe the behavior directly instead:
 
 - Instead of "SCD Type 2": use "snapshots" or describe the mechanism inline —
   when an attribute changes, the old row is retained and a new row is added
-  with an effective date. See the `snapshots/` section.
+  with an effective date. See the `Snapshots/` section.
 - Instead of "SCD Type 1": "overwrite in place" or "no history retained."
 
 If a reader has to know what "Type 2" means before they can understand a
@@ -80,7 +80,7 @@ sentence, the sentence is doing it wrong.
 the source already maintains date-effective history. F&O tracks history
 natively for many entities (prices, exchange rates, worker assignments,
 org hierarchies). Rebuilding that history in the BI layer is unnecessary
-complexity. See [snapshots/overview.md](Snapshots/Snapshots%20Overview.md).
+complexity. See [Snapshots/Snapshots Overview.md](Snapshots/Snapshots%20Overview.md).
 
 ## Key concepts (start here)
 
@@ -89,4 +89,4 @@ complexity. See [snapshots/overview.md](Snapshots/Snapshots%20Overview.md).
 
 ## Pattern index
 
-See [INDEX.md](Pattern%20Index.md) for the full list of patterns with status.
+See [Pattern Index.md](Pattern%20Index.md) for the full list of patterns with status.

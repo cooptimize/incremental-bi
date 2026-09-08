@@ -104,7 +104,7 @@ Before building any of these, check whether the source already keeps date-effect
 
 ## Removed and consolidated
 
-- `facts/incremental-load.md` → split 2026-09-06 into `facts/incremental-date-partition.md` and `facts/incremental-open-settled.md`
+- `facts/incremental-load.md` → split 2026-09-06 into `Gold/Fact Patterns/Fact Partition Rebuild.md` and `Gold/Fact Patterns/Fact Open-Settled Rebuild.md`
 - `facts/partition-based-incremental-load.md`, `facts/watermark-based-load.md`, `facts/full-load.md` (old) → folded into the fact patterns above
 - `force-update-modes.md` → restored as `Cross-Cutting/ForceUpdate Contract.md`
 - `surrogate-key-management.md` → in `Gold/Dimension Patterns/Dimension Incremental Load.md`
