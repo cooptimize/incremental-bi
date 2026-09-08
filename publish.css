@@ -1,0 +1,223 @@
+/* Cooptimize — Obsidian Publish theme
+   Palette and type taken from cooptimize.org
+   navy #00416b · forest #42783c · olive #82aa43 · ember #ef412d · slate #58595b */
+
+@import url('https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@300;400;500;600;700&family=Red+Hat+Mono:wght@400;500&display=swap');
+
+body {
+  --font-text-theme: "Red Hat Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-interface-theme: var(--font-text-theme);
+  --font-monospace-theme: "Red Hat Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-text-size: 17px;
+}
+
+/* ---- structure: mode-independent ---- */
+.published-container {
+  --page-width: 748px;              /* the site's own container width */
+  --page-padding: 40px;
+  --page-side-padding: 40px;
+
+  --page-title-font: var(--font-text-theme);
+  --page-title-size: 2.2em;
+  --page-title-weight: 600;
+  --page-title-line-height: 1.3;
+  --page-title-color: var(--h1-color);
+
+  --header-height: 64px;
+  --logo-max-height: 32px;
+  --logo-radius: 3px;
+  --site-name-font: var(--font-text-theme);
+  --site-name-size: 18px;
+  --site-name-weight: 600;
+  --site-name-color: var(--ct-navy);
+  --site-name-color-hover: var(--ct-forest);
+  --site-menu-icon-color: var(--text-muted);
+  --site-menu-icon-color-hover: var(--ct-navy);
+
+  --sidebar-left-width: 280px;
+  --sidebar-left-background: var(--background-secondary);
+  --sidebar-left-border-width: 1px;
+  --sidebar-left-border-color: var(--background-modifier-border);
+  --sidebar-right-width: 260px;
+  --sidebar-right-background: var(--background-primary);
+  --sidebar-right-border-width: 1px;
+  --sidebar-right-border-color: var(--background-modifier-border);
+
+  --nav-parent-item-color: var(--text-normal);
+  --nav-parent-item-color-active: var(--ct-navy);
+  --nav-parent-item-weight: 600;
+  --nav-item-color: var(--text-muted);
+  --nav-item-color-hover: var(--ct-navy);
+  --nav-item-color-active: var(--ct-navy);
+  --nav-item-weight-active: 600;
+  --nav-item-border-color: transparent;
+  --nav-item-border-color-hover: var(--ct-olive);
+  --nav-item-border-color-active: var(--ct-navy);
+  --nav-collapse-icon-color: var(--text-faint);
+  --nav-collapse-icon-color-hover: var(--ct-navy);
+
+  --component-title-color: var(--text-muted);
+  --component-title-font: var(--font-text-theme);
+  --component-title-size: 12px;
+  --component-title-weight: 600;
+  --component-title-transform: uppercase;
+
+  --outline-heading-color: var(--text-muted);
+  --outline-heading-color-hover: var(--ct-navy);
+  --outline-heading-color-active: var(--ct-navy);
+  --outline-heading-weight-active: 600;
+
+  --graph-height: 240px;
+
+  /* --footer-display: none;  <- uncomment to hide "Powered by Obsidian Publish" */
+}
+
+/* ---- light: the site as it is ---- */
+.theme-light {
+  --ct-navy: #00416b;
+  --ct-forest: #42783c;
+  --ct-olive: #82aa43;
+  --ct-ember: #ef412d;
+
+  --background-primary: #ffffff;
+  --background-primary-alt: #f4f5f7;
+  --background-secondary: #f4f5f7;
+  --background-modifier-border: #dddddd;
+  --background-modifier-hover: rgba(0, 65, 107, 0.06);
+
+  --text-normal: #030303;
+  --text-muted: #58595b;
+  --text-faint: #8b8d91;
+  --text-accent: var(--ct-navy);
+  --text-accent-hover: var(--ct-forest);
+  --text-selection: rgba(130, 170, 67, 0.28);
+  --text-highlight-bg: rgba(178, 210, 53, 0.45);
+  --text-on-accent: #ffffff;
+
+  --interactive-accent: var(--ct-navy);
+  --interactive-accent-hover: var(--ct-forest);
+
+  --h1-color: var(--ct-navy);
+  --h2-color: var(--text-normal);
+  --h3-color: var(--ct-forest);
+  --h4-color: var(--text-normal);
+  --h5-color: var(--text-muted);
+  --h6-color: var(--text-muted);
+
+  --code-normal: var(--ct-ember);
+  --code-background: #f4f5f7;
+  --blockquote-border-color: var(--ct-olive);
+  --tag-color: var(--ct-forest);
+  --tag-background: rgba(130, 170, 67, 0.14);
+  --hr-color: #dddddd;
+
+  --graph-line: rgba(88, 89, 91, 0.28);
+  --graph-node: #58595b;
+  --graph-node-focused: var(--ct-navy);
+  --graph-node-tag: var(--ct-olive);
+  --graph-node-unresolved: var(--ct-ember);
+}
+
+/* ---- dark: navy is unreadable on black, so it gets lifted ---- */
+.theme-dark {
+  --ct-navy: #5aa6d6;
+  --ct-forest: #8fbf5f;
+  --ct-olive: #b2d235;
+  --ct-ember: #ff7a63;
+
+  --background-primary: #121212;
+  --background-primary-alt: #171717;
+  --background-secondary: #1a1a1a;
+  --background-modifier-border: #2e2e2e;
+  --background-modifier-hover: rgba(255, 255, 255, 0.05);
+
+  --text-normal: #e6e7e9;
+  --text-muted: #a0a2a6;
+  --text-faint: #6c6e72;
+  --text-accent: var(--ct-navy);
+  --text-accent-hover: var(--ct-olive);
+  --text-selection: rgba(90, 166, 214, 0.28);
+  --text-highlight-bg: rgba(178, 210, 53, 0.30);
+  --text-on-accent: #0b0b0b;
+
+  --interactive-accent: #1c5f8c;
+  --interactive-accent-hover: var(--ct-forest);
+
+  --h1-color: var(--ct-navy);
+  --h2-color: var(--text-normal);
+  --h3-color: var(--ct-forest);
+  --h4-color: var(--text-normal);
+  --h5-color: var(--text-muted);
+  --h6-color: var(--text-muted);
+
+  --code-normal: var(--ct-ember);
+  --code-background: #1c1c1c;
+  --blockquote-border-color: var(--ct-olive);
+  --tag-color: var(--ct-olive);
+  --tag-background: rgba(178, 210, 53, 0.13);
+  --hr-color: #2e2e2e;
+
+  --graph-line: rgba(230, 231, 233, 0.18);
+  --graph-node: #b8babe;
+  --graph-node-focused: var(--ct-navy);
+  --graph-node-tag: var(--ct-olive);
+  --graph-node-unresolved: var(--ct-ember);
+}
+
+/* ---- the handful of rules variables can't reach ---- */
+.published-container .markdown-preview-view h1 {
+  padding-bottom: .25em;
+  border-bottom: 2px solid var(--ct-navy);
+}
+.published-container .markdown-preview-view h2 {
+  padding-bottom: .2em;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.published-container a:hover { color: var(--ct-forest); text-decoration: underline; text-underline-offset: 2px; }
+
+.published-container code:not(pre code) {
+  background: var(--code-background);
+  color: var(--ct-ember);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 3px;
+  padding: .1em .32em;
+  font-size: .88em;
+}
+.published-container pre {
+  background: var(--code-background);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--ct-navy);
+  border-radius: 3px;
+  font-size: .85em;
+  line-height: 1.55;
+}
+.published-container blockquote {
+  border-left: 3px solid var(--ct-olive);
+  padding-left: 1em;
+  color: var(--text-muted);
+  font-style: normal;
+}
+.published-container th {
+  background: var(--background-secondary);
+  border-bottom: 2px solid var(--ct-navy);
+  font-weight: 600;
+  text-align: left;
+}
+.published-container td, .published-container th {
+  border: 1px solid var(--background-modifier-border);
+  padding: .45em .7em;
+}
+.published-container tbody tr:nth-child(even) { background: var(--background-primary-alt); }
+.published-container .tag {
+  background: var(--tag-background);
+  color: var(--tag-color);
+  border-radius: 3px;
+  padding: .1em .45em;
+  font-size: .82em;
+  text-decoration: none;
+}
+
+@media screen and (max-width: 750px) {
+  .published-container { --page-padding: 20px; --page-side-padding: 20px; }
+  body { --font-text-size: 16px; }
+}
