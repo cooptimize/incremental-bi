@@ -1,0 +1,11 @@
+team: cooptimize
+description: Cooptimize shared BI knowledge and session learnings
+repo: https://github.com/cooptimize/incremental-bi.git
+provider: github
+reviewers: [aaronjennings]
+sharing:
+  recall:
+    enabled: true
+  contributeHint:
+    enabled: true
+autoUpdate: true
