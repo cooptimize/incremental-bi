@@ -52,3 +52,9 @@ not a linear document. It is also a teamai-cli team knowledge repo (`teamai.yaml
 - Frontmatter: `title:`, `author:`, `date:` (YYYY-MM-DD), `tags:` (2-5 tags).
 - Learnings are published via PR only, never pushed directly to `main`.
   Reviewers are listed in `teamai.yaml`.
+
+## Knowledge retrieval (teamai vs direct search)
+
+- `teamai recall` indexes `learnings/`, `skills/`, `rules/`, and `docs/`.
+- The seven Obsidian layer folders (`Bronze/`, `Silver/`, `Gold/`, `Cross-Cutting/`, `Decisions/`, `Semantic Model/`, `Snapshots/`) remain at the repository root to preserve the vault's graph structure and link integrity.
+- For AI agents (such as Coop): use `teamai recall` to query field discoveries in `learnings/`; search the layer folders directly via grep or ripgrep across the local clone (see the `team-knowledge` skill in Coop).
