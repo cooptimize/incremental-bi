@@ -1,6 +1,7 @@
 ---
 title: Partition keys
 layer: cross-cutting
+status: working
 related:
   - Silver/Change Tracking Partitions.md
   - Gold/Fact Patterns/Fact Partition Rebuild.md

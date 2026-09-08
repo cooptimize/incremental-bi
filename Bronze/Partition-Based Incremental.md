@@ -5,7 +5,6 @@ status: draft
 related:
   - Cross-Cutting/Delete Detection Strategies.md
   - Cross-Cutting/Watermark Strategy.md
-  - decisions/source-has-no-delete-signal.md
 ---
 
 ## What this is

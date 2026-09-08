@@ -1,6 +1,7 @@
 ---
 title: "@ForceUpdate"
 layer: cross-cutting
+status: working
 related:
   - Gold/Fact Audit and Repair.md
   - Gold/Dimension Patterns/Dimension Incremental Load.md

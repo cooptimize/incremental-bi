@@ -5,7 +5,6 @@ status: draft
 related:
   - Cross-Cutting/Delete Detection Strategies.md
   - Cross-Cutting/Watermark Strategy.md
-  - silver/incremental-with-deletes.md
 ---
 
 ## What this is

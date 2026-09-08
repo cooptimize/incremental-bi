@@ -1,6 +1,7 @@
 ---
 title: Fact audit and repair
 layer: gold
+status: working
 related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
   - Gold/Fact Patterns/Fact Open-Settled Rebuild.md

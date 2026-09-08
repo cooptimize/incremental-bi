@@ -5,7 +5,6 @@ status: draft
 related:
   - Snapshots/Snapshots Overview.md
   - Snapshots/Full History Snapshot.md
-  - gold/incremental-aggregate-recalc.md
 ---
 
 ## What this is

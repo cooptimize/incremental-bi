@@ -1,6 +1,7 @@
 ---
 title: Fact partition rebuild
 layer: gold
+status: working
 related:
   - Cross-Cutting/Partition Keys.md
   - Silver/Change Tracking Partitions.md

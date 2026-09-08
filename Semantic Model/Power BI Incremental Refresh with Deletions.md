@@ -4,7 +4,6 @@ layer: semantic-model
 status: working
 related:
   - Cross-Cutting/Delete Detection Strategies.md
-  - semantic-model/incremental-period.md
   - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 

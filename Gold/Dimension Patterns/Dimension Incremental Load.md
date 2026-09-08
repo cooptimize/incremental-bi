@@ -1,6 +1,7 @@
 ---
 title: Dimension incremental load
 layer: gold
+status: working
 related:
   - Cross-Cutting/Watermark Strategy.md
   - Gold/Fact Patterns/Fact Partition Rebuild.md

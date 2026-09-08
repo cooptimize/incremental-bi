@@ -1,6 +1,7 @@
 ---
 title: Fact full load
 layer: gold
+status: working
 related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
   - Cross-Cutting/ForceUpdate Contract.md

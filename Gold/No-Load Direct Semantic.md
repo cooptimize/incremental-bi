@@ -1,6 +1,7 @@
 ---
 title: No-load direct semantic
 layer: gold
+status: working
 related:
   - Gold/Dimension Patterns/Dimension Incremental Load.md
   - Gold/Fact Patterns/Fact Partition Rebuild.md

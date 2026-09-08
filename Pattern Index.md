@@ -100,7 +100,7 @@ Before building any of these, check whether the source already keeps date-effect
 
 - No DirectQuery or Direct Lake coverage — everything assumes an import semantic model.
 - No measured amplification numbers from a real environment.
-- Articles link to seven files that were never written: `cross-cutting/hash-comparison.md`, `cross-cutting/layer-strategy-mismatch.md`, `silver/schema-drift.md`, `silver/incremental-with-deletes.md`, `decisions/source-has-no-delete-signal.md`, `gold/incremental-aggregate-recalc.md`, `semantic-model/incremental-period.md`. Write them or drop the links.
+- Seven articles were planned but never written: `cross-cutting/hash-comparison.md`, `cross-cutting/layer-strategy-mismatch.md`, `silver/schema-drift.md`, `silver/incremental-with-deletes.md`, `decisions/source-has-no-delete-signal.md`, `gold/incremental-aggregate-recalc.md`, `semantic-model/incremental-period.md`. Dead links to them were removed from article frontmatter; write the articles when there is real experience to draw on.
 
 ## Removed and consolidated
 

@@ -5,7 +5,6 @@ status: working
 related:
   - Cross-Cutting/Watermark Strategy.md
   - Cross-Cutting/Delete Detection Strategies.md
-  - silver/schema-drift.md
 ---
 
 ## What this is

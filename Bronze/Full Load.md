@@ -4,7 +4,6 @@ layer: bronze
 status: draft
 related:
   - Cross-Cutting/Delete Detection Strategies.md
-  - cross-cutting/layer-strategy-mismatch.md
   - Bronze/Partition-Based Incremental.md
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: Fact open/settled rebuild
 layer: gold
+status: working
 related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
   - Cross-Cutting/Delete Detection Strategies.md

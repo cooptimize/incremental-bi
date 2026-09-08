@@ -1,13 +1,11 @@
 ---
 title: I can't trust modifiedDateTime. What do I do?
-layer: cross-cutting
+layer: decisions
 status: working
 related:
   - Cross-Cutting/Watermark Strategy.md
-  - cross-cutting/hash-comparison.md
   - Cross-Cutting/Delete Detection Strategies.md
   - Gold/Dimension Patterns/Dimension Incremental Load.md
-  - silver/schema-drift.md
 ---
 
 ## What this is

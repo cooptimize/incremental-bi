@@ -1,0 +1,20 @@
+name: Validate vault
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run vault validation
+        run: python3 scripts/validate_vault.py
+      - name: teamai.yaml sanity check
+        run: |
+          for key in 'team:' 'repo:' 'provider:'; do
+            grep -qE "^\s*${key}" teamai.yaml || { echo "teamai.yaml missing ${key}"; exit 1; }
+          done
+          echo "teamai.yaml keys present"
