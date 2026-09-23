@@ -32,7 +32,6 @@ INTO #SourceData
 FROM d365fo.custtable AS ct
 INNER JOIN d365fo.dirpartytable AS dpt
     ON ct.party = dpt.recid
-WHERE ct.dataareaid = @DataAreaId;
 ```
 
 The timestamp controls which customers get updated later. Filtering this list to changed customers would make unchanged ones look deleted.
