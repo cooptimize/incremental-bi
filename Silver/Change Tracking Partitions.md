@@ -64,7 +64,7 @@ Replacing the summary removes partitions that are now empty. Gold still has thos
 
 ## Compare against what gold loaded
 
-Gold compares current tracker state with `gold._FactLoadState`, rather than asking only for timestamps newer than one global watermark. It needs to consider changed counts, new partitions, and partitions present only in loaded state. See [fact partition rebuild](../Gold/Fact%20Patterns/Fact%20Partition%20Rebuild.md) for the work list.
+Gold compares current tracker state with `control.FactLoadState`, rather than asking only for timestamps newer than one global watermark. It needs to consider changed counts, new partitions, and partitions present only in loaded state. See [fact partition rebuild](../Gold/Fact%20Patterns/Fact%20Partition%20Rebuild.md) for the work list.
 
 Don't advance gold's state until the corresponding replacement succeeds. Recording a fresh tracker value against an old fact would hide the remaining work from the next run.
 

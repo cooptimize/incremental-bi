@@ -6,32 +6,26 @@ related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 
-Pointing Power BI at silver views avoids building a persisted gold layer. For a small model with straightforward transformations, that can be a reasonable way to get reporting into use quickly.
+When the source tables already look close to what a report needs, skipping a persisted gold layer can seem attractive. Power BI reads the data directly, and there is one less load to maintain.
 
-The decision becomes harder when the model needs shared dimensions, stable surrogate keys, or expensive fact transformations. Views still need to produce those results whenever the import refresh reads them.
+This is an alternative to the standard gold design, not the default for this library. The SQL standards put business joins and calculations in stored procedures and keep reporting views focused on presentation.
 
-## Where it fits
+## What the gold layer provides
 
-Consider this approach when silver already has the required reporting grain, relationships are simple, and the source queries fit the refresh window. A small number of predictable joins may be entirely adequate.
+A customer dimension keeps the same `PKCustomer` associated with its `dataareaid` and `customerid`. Facts store that reference as `FKCustomer`. A source record number or a fresh row number generated during refresh is not automatically a substitute for that persistent association.
 
-Keep the view contract deliberate. Business-facing names, selected columns, and a defined grain make the semantic model easier to maintain even when the data isn't persisted in gold.
+Gold also prepares shared business results before reports read them. When several reports need the same joins or calculations, the stored procedure is where that work is performed and checked.
 
-## Keys still need a design
+The reporting view then selects the prepared columns. Under the standards, shared views use `common`, while a model-specific view uses its model's schema, such as `sales.Customer`. Joins and other business transformations in those views require an explicit exception.
 
-F&O natural keys often need company scope, such as `DataAreaId` plus `AccountNum`. The model needs a consistent relationship key on both sides. If you want a warehouse surrogate key, its assignment must remain stable between refreshes; generating a fresh row number in a view is not a durable mapping.
+## When to reconsider the extra load
 
-A source `RecId` may be useful where its scope and lifecycle meet the requirement, but it is not automatically the business identity the model needs. The [dimension pattern](Dimension%20Patterns/Dimension%20Incremental%20Load.md) describes a persisted mapping that survives ordinary attribute updates.
+If the source already supplies the required shape, stable keys, and acceptable query performance, a direct approach may avoid unnecessary copying. Measure the actual refresh work before deciding that persistence is needed for speed alone.
 
-Key size and cardinality affect the model's cost, but they need measurement. String keys alone do not establish that a small model will perform badly.
+If the direct approach starts accumulating business joins and calculations, move that work into the gold procedure and publish a simple view over the result. Keeping the reporting columns consistent can reduce the impact on the semantic model.
 
-## Transformation cost repeats at refresh
+## Not covered
 
-As unions, allocations, and multi-table joins accumulate, the import refresh repeats more work to reconstruct the result. A view can benefit from its underlying engine and indexes; it does not itself preserve a previously calculated result for the next load.
-
-A persisted gold table gives you a place to perform and validate that work once per load, potentially rebuilding only part of the output. That benefit matters when repeated computation becomes the refresh bottleneck or several consumers need the same transformed data.
-
-## Leave a route to persistence
-
-Measure source-query time, refresh duration, and model size as the workload grows. If materializing the result becomes worthwhile, preserving the view's columns and grain can reduce disruption to the semantic model. A change in grain or relationship keys requires a more substantial migration.
-
-This article concerns skipping persisted gold for an import model. DirectQuery and Direct Lake have different query and refresh behavior and remain outside the developed coverage here.
+- **Exceptions to the view standards:** any required joins or transformations need an explicit decision and a comment explaining the exception.
+- **Measured performance:** this article provides no benchmark for deciding when persistence pays for itself.
+- **DirectQuery and Direct Lake:** their query and refresh behavior needs separate treatment.

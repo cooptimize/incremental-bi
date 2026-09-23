@@ -7,143 +7,135 @@ related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 
-A customer's name or group can change, but you don't want to rebuild the entire customer table every time that happens. You want to bring in the changes while keeping the same primary key in gold, `PKCustomer`, associated with that customer's natural/business key: `DataAreaId` plus `CustomerId`. The sales facts already reference that `PKCustomer`.
+A customer's name or group can change, but you don't want to rebuild the entire customer table every time that happens. You want the same primary key in gold, `PKCustomer`, to stay associated with the customer's natural/business key: `dataareaid` plus `customerid`. Sales facts refer to that primary key through `FKCustomer`.
 
-This pattern updates existing customers and adds new ones. It checks both the customer and party tables for changes, since the customer's name comes from the party record.
+This pattern updates existing customers and adds new ones. It checks both the customer and party tables because the customer's name comes from the party record. The examples use SQL Server/Azure SQL.
 
 ## How do we know a customer changed?
 
-`d365fo.custtable` and `d365fo.dirpartytable` each have a `SinkModifiedOn` timestamp. We take the later of the two and call it `SinkMaxModifiedOn`. That gives us one value to compare with the last version loaded into gold.
+Each source table has a `SinkModifiedOn` timestamp. `VALUES` puts them together and `MAX` picks the latest, giving us one `SinkMaxModifiedOn` to compare with gold.
 
-Here, `VALUES` puts the two timestamps together and `MAX` picks the latest. The query collects customers for one company, identified by `@DataAreaId`:
+Join the customer to its party record and keep the result for the merge. The company filter matches the company we replace later:
 
 ```sql
-WITH
-     CompanyCustomers AS
-     (
-         SELECT
-               ct.DataAreaId
-              ,ct.AccountNum
-              ,ct.CustGroup
-              ,ct.RecId
-              ,ct.Party
-              ,ct.SinkModifiedOn
-         FROM d365fo.custtable AS ct
-         WHERE ct.DataAreaId = @DataAreaId
-     )
 SELECT
-      cc.DataAreaId         AS [DataAreaId]
-     ,cc.AccountNum         AS [CustomerId]
-     ,dpt.Name              AS [Customer]
-     ,cc.CustGroup          AS [CustomerGroup]
-     ,cc.RecId              AS [SourceRecId]
-     ,wm.SinkMaxModifiedOn  AS [SinkMaxModifiedOn]
+      ct.dataareaid
+     ,ct.accountnum
+     ,dpt.name
+     ,ct.custgroup
+     ,ct.recid
+     ,(
+          SELECT MAX(ts.SinkModifiedOn)
+          FROM (VALUES (ct.SinkModifiedOn), (dpt.SinkModifiedOn)) AS ts(SinkModifiedOn)
+      ) AS [SinkMaxModifiedOn]
 INTO #SourceData
-FROM CompanyCustomers AS cc
+FROM d365fo.custtable AS ct
 INNER JOIN d365fo.dirpartytable AS dpt
-    ON cc.Party = dpt.RecId
-CROSS APPLY
-(
-    SELECT MAX(ts.SinkModifiedOn) AS [SinkMaxModifiedOn]
-    FROM
-    (
-        VALUES
-              (cc.SinkModifiedOn)
-             ,(dpt.SinkModifiedOn)
-    ) AS ts(SinkModifiedOn)
-) AS wm;
+    ON ct.party = dpt.recid
+WHERE ct.dataareaid = @DataAreaId;
 ```
 
-We keep the full customer list here and decide which rows need updating later. Otherwise, an unchanged customer would be missing from the list and could be mistaken for a deleted one.
+The timestamp controls which customers get updated later. Filtering this list to changed customers would make unchanged ones look deleted.
 
 ## How does a customer keep the same primary key?
 
-The load matches on the natural/business key: `DataAreaId` and `CustomerId`. When it finds a match, it updates the customer's details and leaves the existing primary key, `PKCustomer`, unchanged.
+The load matches the source company and account number to `dataareaid` and `customerid` in `dim.Customer`. A match keeps its existing `PKCustomer`. A new customer gets a new value from the table's identity column.
 
-A natural/business key that isn't already in gold gets a new `PKCustomer`. This one-time setup gives the existing dimension table a sequence that supplies the next number automatically:
+This is the one-time table setup. `customerid` is the matching field; `Customer` exposes the account number to reports, and `CustomerName` holds the name:
 
 ```sql
-CREATE SEQUENCE dim.seq_PKCustomer START WITH 1 INCREMENT BY 1;
+CREATE TABLE dim.Customer
+(
+      PKCustomer BIGINT IDENTITY NOT NULL
+     ,dataareaid VARCHAR(4) NULL
+     ,customerid VARCHAR(20) NULL
+     ,Customer VARCHAR(20) NULL
+     ,CustomerName VARCHAR(100) NULL
+     ,CustomerGroup VARCHAR(20) NULL
+     ,SourceRecId BIGINT NULL
+     ,SinkMaxModifiedOn DATETIME2(7) NULL
+);
 
-ALTER TABLE dim.Customer ADD CONSTRAINT DF_Customer_PKCustomer
-    DEFAULT NEXT VALUE FOR dim.seq_PKCustomer FOR PKCustomer;
+CREATE INDEX IX_Customer_dataareaid_customerid
+    ON dim.Customer (dataareaid, customerid);
 ```
 
-The insert below leaves out `PKCustomer`, letting the default fill it in. That's also how SQL Server supports [using a sequence with MERGE](https://learn.microsoft.com/en-us/sql/t-sql/functions/next-value-for-transact-sql).
+The insert leaves out `PKCustomer` so the database assigns it. The matching index helps the lookup; it does not enforce uniqueness.
 
 ## What if we need to reload the details?
 
-Usually, we trust the timestamps to tell us what changed. Sometimes we want to reapply the customer details anyway, or start the company's customer table over. The procedure's `@ForceUpdate` parameter selects the behavior and defaults to `0`:
+The procedure's `@ForceUpdate` parameter defaults to `0`:
 
 | Value | What happens |
 |---|---|
 | `0` | Update customers with a newer timestamp. |
-| `1` | Reapply every customer's details, keeping their existing `PKCustomer` values. |
-| `2` | Remove and reload the company's customers, assigning new `PKCustomer` values. |
+| `1` | Reapply every customer's details, keeping their `PKCustomer` values. |
+| `2` | Remove and reload the company's customers, assigning new primary keys. |
 
-Use `1` to bring stale details back in line with the source. With `2`, those primary keys are reassigned, so the facts that reference them also need rebuilding.
-
-After collecting the source rows, only mode `2` clears the company's existing customers:
+Use `1` to bring stale details back in line with the source. With `2`, facts referencing the old primary keys also need rebuilding. After gathering the source, only mode `2` clears the company:
 
 ```sql
 IF @ForceUpdate IS NULL OR @ForceUpdate NOT IN (0, 1, 2)
     THROW 50001, 'ForceUpdate must be 0, 1, or 2.', 1;
 
 IF @ForceUpdate = 2
-    DELETE dc
-    FROM dim.Customer AS dc
-    WHERE dc.DataAreaId = @DataAreaId;
+    DELETE cust
+    FROM dim.Customer AS cust
+    WHERE cust.dataareaid = @DataAreaId;
 ```
 
 ## Bringing the changes into gold
 
-The `MERGE` puts those decisions together. An existing customer gets updated when its timestamp is newer, when a timestamp is missing, or when mode `1` requests it. A new customer gets inserted and receives its `PKCustomer` from the sequence.
+The `MERGE` updates matched customers, inserts new ones, and removes customers absent from the complete source list. This example assumes those removals are appropriate; the company condition keeps other companies untouched.
 
-This example also removes customers missing from the complete source list. The delete condition limits that removal to the company we're loading.
+Source fields become the dimension's fields here, including the separate customer number and name. Missing timestamps or mode `1` cause details to be reapplied.
 
 ```sql
-MERGE INTO dim.Customer AS tgt
+MERGE INTO dim.Customer AS cust
 USING #SourceData AS src
-    ON tgt.DataAreaId = src.DataAreaId
-   AND tgt.CustomerId = src.CustomerId
-WHEN MATCHED AND (
+    ON cust.dataareaid = src.dataareaid
+    AND cust.customerid = src.accountnum
+WHEN MATCHED AND
+(
        @ForceUpdate = 1
-    OR tgt.SinkMaxModifiedOn IS NULL
+    OR cust.SinkMaxModifiedOn IS NULL
     OR src.SinkMaxModifiedOn IS NULL
-    OR tgt.SinkMaxModifiedOn < src.SinkMaxModifiedOn
+    OR cust.SinkMaxModifiedOn < src.SinkMaxModifiedOn
 ) THEN UPDATE SET
-      tgt.Customer = src.Customer
-     ,tgt.CustomerGroup = src.CustomerGroup
-     ,tgt.SourceRecId = src.SourceRecId
-     ,tgt.SinkMaxModifiedOn = src.SinkMaxModifiedOn
+      cust.Customer = src.accountnum
+     ,cust.CustomerName = src.name
+     ,cust.CustomerGroup = src.custgroup
+     ,cust.SourceRecId = src.recid
+     ,cust.SinkMaxModifiedOn = src.SinkMaxModifiedOn
 WHEN NOT MATCHED BY TARGET THEN
     INSERT
     (
-          DataAreaId
-         ,CustomerId
+          dataareaid
+         ,customerid
          ,Customer
+         ,CustomerName
          ,CustomerGroup
          ,SourceRecId
          ,SinkMaxModifiedOn
     )
     VALUES
     (
-          src.DataAreaId
-         ,src.CustomerId
-         ,src.Customer
-         ,src.CustomerGroup
-         ,src.SourceRecId
+          src.dataareaid
+         ,src.accountnum
+         ,src.accountnum
+         ,src.name
+         ,src.custgroup
+         ,src.recid
          ,src.SinkMaxModifiedOn
     )
-WHEN NOT MATCHED BY SOURCE AND tgt.DataAreaId = @DataAreaId THEN
+WHEN NOT MATCHED BY SOURCE AND cust.dataareaid = @DataAreaId THEN
     DELETE;
 ```
 
 ## Not covered
 
-- **Procedure setup and failed runs:** these SQL Server/Azure SQL snippets assume the tables exist; transaction and retry handling must keep a failed load from leaving partial changes.
-- **Keeping deleted customers for old sales:** use a deletion flag when historical facts still need the customer; see [delete detection](../../Cross-Cutting/Delete%20Detection%20Strategies.md).
-- **Missing or late source data:** incomplete joins can look like deletions, and timestamps can miss changes; see [reconciliation](../../Cross-Cutting/ForceUpdate%20Contract.md).
-- **Reused customer numbers:** the match assumes a customer number continues to identify the same customer within its company.
-- **Keeping earlier names or groups:** this example overwrites details; see [snapshots](../../Snapshots/Snapshots%20Overview.md) when reports need their history.
-- **Reducing source reads:** updating fewer customers doesn't necessarily mean reading fewer source rows.
+- **Failed rebuilds:** mode `2` removal and the merge need to commit together when consumers require a complete result.
+- **Keeping deleted customers or earlier details:** see [delete detection](../../Cross-Cutting/Delete%20Detection%20Strategies.md) and [snapshots](../../Snapshots/Snapshots%20Overview.md).
+- **Missing or late source data:** incomplete joins can resemble deletions, and timestamps can miss changes; use [reconciliation](../../Cross-Cutting/ForceUpdate%20Contract.md).
+- **Duplicate, null, or reused matching values:** this example needs one unambiguous match per customer; the non-unique index does not establish that.
+- **Other targets and source-read costs:** identity setup is platform-specific, and fewer updates do not necessarily mean fewer source rows read.

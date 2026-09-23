@@ -6,41 +6,39 @@ related:
   - Gold/Fact Patterns/Fact Open-Settled Rebuild.md
 ---
 
-Fact reconciliation compares the loaded result with what silver says should be there. It runs independently of the normal change signal, so it can find an omission even when the incremental job succeeded and advanced its state.
+A successful load can still miss or duplicate transactions. To check it, compare the fact with the source by month, then rebuild the months that disagree.
 
-A common example is a transaction dropped by a join before its dimension member existed. Rebuilding only rows with newer timestamps may never revisit it. A comparison of expected and loaded rows gives the repair process another way to find the gap.
+## Compare the same result on both sides
 
-## Compare at the same grain
-
-Start with counts and additive measures by partition. The source calculation must use the fact's intended filters and grain without repeating the faulty join you are trying to detect. The example assumes one fact row per eligible `InventTrans` row, with `Amount` representing `CostAmountPosted`.
-
-Materialize the two small summaries. These are SQL Server-style examples over conformed tables:
+Count rows and sum the amount in `fact.InventoryTransactions`:
 
 ```sql
 SELECT
-      fit.SinkCreatedMonth          AS [SinkCreatedMonth]
+      itr.SinkCreatedMonth          AS [SinkCreatedMonth]
      ,COUNT_BIG(*)                  AS [RowCount]
-     ,COALESCE(SUM(fit.Amount), 0)  AS [Amount]
+     ,COALESCE(SUM(itr.Amount), 0)  AS [Amount]
 INTO #GoldState
-FROM gold.FactInventTrans AS fit
-GROUP BY fit.SinkCreatedMonth;
+FROM fact.InventoryTransactions AS itr
+GROUP BY itr.SinkCreatedMonth;
 ```
+
+Compare that with `#InventoryState`, the source rows prepared by the [open/settled load](Fact%20Patterns/Fact%20Open-Settled%20Rebuild.md):
 
 ```sql
 SELECT
-      it.SinkCreatedMonth                   AS [SinkCreatedMonth]
-     ,COUNT_BIG(*)                          AS [RowCount]
-     ,COALESCE(SUM(it.CostAmountPosted), 0) AS [Amount]
+      inv.SinkCreatedMonth                      AS [SinkCreatedMonth]
+     ,COUNT_BIG(*)                              AS [RowCount]
+     ,COALESCE(SUM(inv.costamountposted), 0)    AS [Amount]
 INTO #SourceState
-FROM silver.InventTrans AS it
-GROUP BY it.SinkCreatedMonth;
+FROM #InventoryState AS inv
+GROUP BY inv.SinkCreatedMonth;
 ```
 
-For an aggregate fact, count the expected output groups rather than comparing raw source rows with aggregated rows. Use compatible numeric types and define any required rounding tolerance for measures.
+The example expects one fact row per source transaction, with `costamountposted` loaded as `Amount`. Checking the source before dimension joins lets us catch rows those joins dropped or multiplied.
 
-## Find the differences
+## Find the months that disagree
 
-Build the partition list from both sides so an entirely missing or extra partition is included:
+The combined month list matters: checking only source months would miss an old month that should now be empty in the fact.
 
 ```sql
 WITH
@@ -65,18 +63,14 @@ WHERE gs.SinkCreatedMonth IS NULL
     OR gs.Amount <> ss.Amount;
 ```
 
-Equal counts and sums are useful evidence, not proof of row-level equality. Different keys can have the same count and amount, and offsetting value errors can cancel out. Add comparisons for attributes or keys whose correctness matters to the report.
+Record the differences, replace those months from the prepared source, and check again. A repeated difference points to a problem the reload itself cannot fix.
 
-## Repair and record the result
+This is `@ForceUpdate = 1` for facts. It does not depend on the timestamps used to select the routine incremental work.
 
-Log the discrepant partitions, counts, and measure differences before replacing them. Rebuild those partitions from a consistent source state, then repeat the check. If the same difference remains, investigate the transformation rather than scheduling the same ineffective repair indefinitely.
+## Not covered
 
-This is `@ForceUpdate = 1` for facts. It can use partition replacement even when the routine [open/settled load](Fact%20Patterns/Fact%20Open-Settled%20Rebuild.md) selects rows by key, provided the fact carries the stable partition key needed by the repair.
-
-Unknown dimension members help preserve transaction counts when a lookup is late. They don't prove the lookup is correct, so track unresolved keys separately and reconsider them during repair.
-
-## Know the comparison's boundary
-
-If silver and gold both missed the same source deletion, they can agree while both are wrong. Reconcile silver with its own input too; rebuilding gold from unchanged silver will not fix that gap.
-
-Large or collapsed partitions make repair expensive even when detection is cheap. Keep the discrepancy log so you can measure how often repairs occur, how much data they replace, and whether a different routine load would cost less.
+- **Equal totals with different contents:** counts and sums can conceal offsetting errors; compare keys or attributes when needed.
+- **Aggregated facts and rounding:** compare the expected output grain and use a defined tolerance for measures.
+- **Unresolved dimension references:** null `FKItem` values retain transactions without placeholder rows, but need a separate check and later key resolution.
+- **Upstream gaps:** the fact and its input can agree while both miss a source change.
+- **Repair orchestration:** transaction handling, retries, and retained discrepancy logs are outside these SQL Server/Azure SQL comparison excerpts.

@@ -34,7 +34,7 @@ Treat length as a symptom. If an article feels long, look for repetition, unnece
 
 ## Show useful code
 
-Explain what a query consumes and produces before showing it. Keep a complete logical operation together; split longer walkthroughs at meaningful steps. Preserve the examples needed to understand the mechanism rather than replacing them with vague prose.
+Use the simplest code that makes the mechanism clear. A straightforward join should look like a straightforward join; avoid pass-through CTEs and extra stages that do no useful work. Keep necessary examples and briefly explain their purpose. Split a walkthrough only where the steps help the reader follow it.
 
 Follow the external [SQL formatting standard](../coop-standards/SQL/SQL%20Formatting.md) and the applicable SQL standards identified in AGENTS.md. Read them from the shared library without copying or editing them. New and fully rewritten statements use the canonical style; targeted edits preserve established formatting in unrelated code.
 

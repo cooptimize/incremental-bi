@@ -16,11 +16,19 @@ This repository is a practitioner's reference for ERP analytics load patterns, f
 - Describe history behavior directly, such as “overwrite in place,” “retain each observed version,” or “capture state at period close.” Do not use numbered SCD terminology.
 - Before designing a snapshot or history-tracking pattern, check whether the source already maintains the required date-effective history. See [Snapshots overview](Snapshots/Snapshots%20Overview.md).
 
+## Keep examples simple
+
+- Use the simplest code that demonstrates how the pattern works and why. Include only the structure needed for that example.
+- Prefer a direct query for a simple join. Do not wrap a table in a pass-through CTE or add intermediate steps just to make the example look structured.
+- Add CTEs, temporary tables, and helper expressions when they perform useful work or their result is reused. Do not add them merely to illustrate every available SQL convention.
+- For a simple example, keep its scope filter in the direct query rather than adding a CTE solely to hold the predicate. This is a project-specific exception to the external pre-join filtering convention.
+- Keep essential logic, including the combined source timestamp and matching scope. Put unimplemented production concerns in “Not covered” instead of expanding the example with scaffolding.
+
 ## SQL naming
 
-- Use `dim.Customer` for the customer dimension and `PKCustomer` for its primary key. Match it to the natural/business key `DataAreaId` plus `CustomerId`.
+- Use `dim.Customer` for the customer dimension and `PKCustomer` for its primary key. Match it to the natural/business key `dataareaid` plus `customerid`.
 - Use source-system schemas for source tables, such as `d365fo.custtable` and `d365fo.dirpartytable`.
-- Never use the `dbo` schema in SQL examples. Place supporting objects in the appropriate schema, such as `dim` for the customer key sequence.
+- Never use the `dbo` schema in SQL examples. Follow the external standards for identity generation and supporting-object placement.
 
 ## External SQL standards
 

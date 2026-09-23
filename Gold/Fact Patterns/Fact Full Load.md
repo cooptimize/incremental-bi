@@ -6,49 +6,60 @@ related:
   - Cross-Cutting/ForceUpdate Contract.md
 ---
 
-A full load replaces the fact table on every run. If it fits your refresh window, start here: you avoid maintaining incremental state and a separate path for deletions already reflected in silver.
+If rebuilding the sales table fits the refresh window, you may not need an incremental load. Prepare the current sales rows and replace the fact. Deleted lines disappear because they are no longer in the source.
 
-It also works well when changes are spread across most of the table or the source query combines inputs that are difficult to map back to individual fact rows. Measure how much work an incremental would actually avoid before adding that machinery.
+This SQL Server/Azure SQL example prepares the rows before clearing `fact.Sales`.
 
-## Rebuild from the current inputs
+## Prepare the sales rows
 
-The following SQL Server-style excerpt uses conformed budget lines with account, department, date, and amount fields. The unknown key `0` must already exist in both dimensions:
+The order header supplies the customer account. Matching that account and company to `dim.Customer` gives us `PKCustomer`, which the fact will store as `FKCustomer`:
 
 ```sql
-TRUNCATE TABLE gold.FactBudget;
-
-INSERT INTO gold.FactBudget
-(
-      AccountKey
-     ,DepartmentKey
-     ,DateKey
-     ,Amount
-)
 SELECT
-      COALESCE(da.AccountKey, 0)    AS [AccountKey]
-     ,COALESCE(dd.DepartmentKey, 0) AS [DepartmentKey]
-     ,btl.DateKey                   AS [DateKey]
-     ,btl.Amount                    AS [Amount]
-FROM silver.BudgetTransactionLine AS btl
-LEFT JOIN gold.DimAccount AS da
-    ON btl.DataAreaId = da.DataAreaId
-    AND btl.MainAccountId = da.MainAccountId
-LEFT JOIN gold.DimDepartment AS dd
-    ON btl.DepartmentId = dd.DepartmentId;
+      st.custaccount
+     ,sl.salesid
+     ,sl.lineamount
+     ,cust.PKCustomer
+INTO #FinalSales
+FROM d365fo.salesline AS sl
+INNER JOIN d365fo.salestable AS st
+    ON sl.dataareaid = st.dataareaid
+    AND sl.salesid = st.salesid
+LEFT JOIN dim.Customer AS cust
+    ON sl.dataareaid = cust.dataareaid
+    AND st.custaccount = cust.customerid;
 ```
 
-Adapt the joins to the actual dimension grain, including company where needed. Each lookup must return at most one member. The left joins keep a line with an unresolved member in the result rather than silently losing its amount.
+The left join keeps sales with a missing customer match. Their `FKCustomer` is null until a later load resolves it.
 
-Load dimensions first and record unresolved lookups for repair. On the next full fact load, a now-available dimension member can replace the unknown key.
+## Replace the fact
 
-## Publish a complete result
+Clear the old result and insert the prepared rows, naming the fact columns here:
 
-The truncate and insert are the replacement body, not a complete procedure. Use a transaction or build into staging and publish the completed result so consumers cannot read the table halfway through. The available publication mechanism depends on the target platform.
+```sql
+TRUNCATE TABLE fact.Sales;
 
-The procedure still accepts `@ForceUpdate`; all three modes perform the same full replacement. See the [shared contract](../../Cross-Cutting/ForceUpdate%20Contract.md).
+INSERT INTO fact.Sales
+(
+      FKCustomer
+     ,Customer
+     ,SalesOrder
+     ,SalesAmount
+)
+SELECT
+      fs.PKCustomer     AS [FKCustomer]
+     ,fs.custaccount    AS [Customer]
+     ,fs.salesid        AS [SalesOrder]
+     ,fs.lineamount     AS [SalesAmount]
+FROM #FinalSales AS fs;
+```
 
-## Keep the reconciliation check
+All three `@ForceUpdate` modes perform this same replacement. If rereading the whole table becomes too expensive, compare [partition rebuild](Fact%20Partition%20Rebuild.md) and [open/settled rebuild](Fact%20Open-Settled%20Rebuild.md).
 
-A full load removes the need to detect individual changes in gold. It does not establish that silver is complete or that the query's joins and filters are correct. Compare the loaded result with the expected grain and measures, especially after changing the transformation.
+## Not covered
 
-When runtime no longer fits, compare [partition rebuild](Fact%20Partition%20Rebuild.md) for stable transaction values with [open/settled rebuild](Fact%20Open-Settled%20Rebuild.md) for transactions that continue changing.
+- **Live readers and failed writes:** wrap removal and insertion in a transaction when they must become visible together.
+- **Source completeness and duplicate matches:** missing headers can drop lines, and multiple customer matches can multiply them; validate the intended row count.
+- **Unresolved customers:** track null `FKCustomer` values and confirm they resolve after the dimension load.
+- **Business transformations:** add currency, allocation, and reporting rules when preparing the rows.
+- **Reconciliation:** a full load can repeat a source or join error; see [audit and repair](../Fact%20Audit%20and%20Repair.md).
