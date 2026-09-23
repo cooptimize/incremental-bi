@@ -5,57 +5,35 @@ status: draft
 related:
   - Cross-Cutting/Delete Detection Strategies.md
   - Cross-Cutting/Watermark Strategy.md
-  - silver/incremental-with-deletes.md
+  - Silver/Incremental with Hard Delete.md
 ---
 
-## What this is
+A change feed gives bronze insert, update, and delete events instead of requiring a complete extraction on every run. An explicit delete event is particularly useful: it identifies the missing record while its key is still available.
 
-The source system provides a change feed — a stream of insert, update, and delete
-events. Bronze consumes that feed rather than re-pulling the full table. In the
-F&O context, this is primarily Synapse Link / Fabric Link with CDC enabled.
+Use this approach when the source exposes a suitable feed and processing changes saves enough work to justify checkpointing and recovery. A feed can carry changes for a history table as well as a current-state table; what bronze retains determines which downstream uses remain possible.
 
-This is the cleanest bronze pattern when it's available. Deletes are signaled
-explicitly; you don't have to infer them.
+## Start from a known state
 
-## When to use it
+The consumer needs an initial snapshot and a feed position from which to continue. Those two must agree: a gap between the snapshot and the first consumed event can lose changes, while overlap requires safe replay.
 
-- Fabric Link or Synapse Link with CDC enabled
-- Source table is large enough that full load is expensive or slow
-- You need reliable delete detection without periodic full reconciliation
+After that, each run reads a bounded batch, applies it, and records the checkpoint only after success. Reprocessing a batch should produce the same result. For a current-state target, an older update must not overwrite a newer value simply because it arrived later.
 
-## When NOT to use it
+The exact sequence field, ordering guarantees, and checkpoint mechanism belong to the source's feed contract. A timestamp alone should not be assumed to provide all three.
 
-- Source doesn't support a change feed (most REST APIs, flat file extracts)
-- CDC infrastructure isn't set up and the table is small enough for full load
-- You need point-in-time historical snapshots — CDC gives you changes, not
-  a full state at every moment
+## Understand the export you're consuming
 
-## How it works
+For F&O, Synapse Link supports create, update, and delete propagation, but a queryable current-state export and incremental change files are different inputs. Microsoft documents deletion metadata and the available export options in [Choose finance and operations data](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-select-fno-data).
 
-_TODO — cover Fabric Link CDC mechanics: how the feed is structured, what the
-change type column looks like, ordering guarantees, latency characteristics._
+Confirm what your configured path exposes before implementing the consumer. A service applying deletes to its own table does not automatically mean your downstream job receives a durable log of every deleted key.
 
-## The hard parts
+## Plan for replay and gaps
 
-_TODO — cover: initial load bootstrapping (you still need a full snapshot to
-start), feed gaps if the pipeline is down, handling out-of-order events,
-schema changes in the feed._
+A consumer that falls behind must be able to resume from retained events. If the required events have expired, it needs a new baseline rather than guessing where to restart. Schema changes and reinitialization also need explicit handling so an apparently successful restart doesn't skip part of the data.
 
-## F&O specific notes
+Reconciliation remains useful even with a feed. It checks whether the consumer applied what the source delivered and whether downstream transformations preserved the intended result.
 
-_TODO — cover: which F&O entities are supported by Fabric Link, CDC vs.
-non-CDC Fabric Link behavior, known gaps or unsupported entities._
+## Still to validate
 
-## Related patterns
+This draft does not yet provide a tested F&O consumer. It needs the selected export mode, event schema, ordering and retention guarantees, bootstrap sequence, and behavior during a link reset. Entity support also needs checking against the actual environment.
 
-- [Delete detection](../Cross-Cutting/Delete%20Detection%20Strategies.md) — CDC is one of the
-  few bronze patterns that gives you reliable delete signals
-- [Silver incremental with deletes](../silver/incremental-with-deletes.md) —
-  downstream consumer of this pattern
-
-## Open questions
-
-- Which F&O entities are excluded from Fabric Link CDC?
-- What happens to the change feed during a Fabric Link reset / full resync?
-- Ordering guarantees: are events strictly ordered per entity, or only
-  approximately ordered across entities?
+See [silver incremental with hard delete](../Silver/Incremental%20with%20Hard%20Delete.md) for the current-state destination and [full history snapshots](../Snapshots/Full%20History%20Snapshot.md) for retaining observed versions.

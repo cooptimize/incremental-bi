@@ -4,88 +4,38 @@ layer: bronze
 status: draft
 related:
   - Cross-Cutting/Delete Detection Strategies.md
-  - Cross-Cutting/Watermark Strategy.md
-  - decisions/source-has-no-delete-signal.md
+  - Cross-Cutting/Partition Keys.md
+  - Bronze/Full Load.md
 ---
 
-## What this is
+Partition-based extraction reloads a recent slice of the source on each run, such as records created this month. It reduces the amount pulled without requiring a change feed, but it relies on older slices being stable or checked separately.
 
-Pull only the records belonging to recent partitions, defined by an immutable
-date field on the source. Instead of reloading the whole table, you reload
-only the current period (e.g., current month, current year) on each run.
+An immutable date keeps a record in the same slice. It does not guarantee that the record stops changing. An order created in January can still be amended or deleted in June.
 
-The classic example: sales orders by created date. You only pull orders created
-in the current month, because older partitions are assumed stable.
+## Choose the window
 
-This is not CDC. There is no change signal. You're making an assumption about
-data stability to avoid a full reload.
+Use a source field whose behavior you understand, then define the oldest partition each run will revisit. A creation date and an accounting date answer different questions: a transaction entered today can carry an accounting date in a prior period.
 
-## When to use it
+If that prior period lies outside the extraction window, the row is missed. Making the date immutable doesn't solve backdated arrivals; the window must cover where new and changed records can actually appear.
 
-- Source table is too large for full load on every run
-- No CDC feed is available
-- There is an immutable date field that reliably partitions the data
-  (created date, posted date, transaction date that cannot be backdated)
-- Deletes of recent records are either acceptable to miss or handled separately
+Overlap can cover ordinary delays near a boundary. It cannot cover an arbitrarily old correction. Size the window from observed behavior and the reporting requirement, then choose a separate reconciliation cadence for data outside it.
 
-## When NOT to use it
+## Replace the selected slice completely
 
-- The date field can be changed retroactively (F&O allows backdating on many
-  transaction types — this assumption breaks silently)
-- Old records can be deleted (see hard parts below)
-- The source has no reliable immutable date field
+Extract the full contents of the selected partitions into staging and publish them after success. Replacing a complete slice makes deletions within that slice visible by absence. An upsert alone leaves deleted rows behind, even inside the reload window.
 
-## How it works
+Keep the extraction and replacement predicates aligned. If you fetch June but delete May and June from bronze, the load has removed data it never intended to replace.
 
-_TODO — cover the basic mechanics: define partition window, pull records where
-date field falls in window, upsert to bronze. Overlap window sizing (reload
-last N days as buffer)._
+## Older records need another path
 
-## The hard parts
+A January order deleted in June remains in bronze if January is never read again. The options are a periodic full reconciliation, a separate key comparison for older partitions, or a reliable deletion signal from the source. A soft-delete flag helps only when the extraction actually retrieves the changed record.
 
-**The delete problem.** This pattern has no delete signal for records outside
-the active reload window. If a sales order created in January is deleted in
-June, and you're only reloading the current month, you will never see that
-deletion. The record stays in bronze indefinitely.
+Choose the acceptable delay explicitly. A monthly reconciliation means a deletion may remain visible for most of a month; that can be acceptable for one report and unacceptable for another.
 
-Options:
-- Accept the risk (appropriate if deletes are rare and business impact is low)
-- Periodic full reconciliation — run a full load on a slower cadence (weekly,
-  monthly) to catch accumulated deletions
-- Add a separate delete-check job that compares bronze to source for older
-  partitions
-- Use a watermark on a secondary field to catch soft deletes (if the source
-  soft-deletes with a flag or timestamp)
+This extraction decision differs from [partition keys in silver and gold](../Cross-Cutting/Partition%20Keys.md). Here the date determines what you can retrieve from the source. Downstream, a stored partition key determines what gets replaced after changes have already arrived.
 
-None of these are clean. This is a fundamental limitation of the pattern.
+## Still to validate
 
-**The backdating problem.** F&O allows financial backdating. A transaction
-posted today may carry an effective date in a prior period. If your partition
-field is effective date rather than created date, recently-posted old records
-will fall outside your reload window and be missed.
+This draft needs an entity-specific example with a verified partition field, measured arrival delays, and a restartable replacement operation. It does not establish a default reconciliation interval for F&O.
 
-**Partition boundary drift.** If the partition window is too narrow, late-
-arriving records near the boundary are missed. Overlap (reload last N days
-extra) helps but adds cost and doesn't eliminate the problem.
-
-## F&O specific notes
-
-_TODO — which F&O transaction types allow backdating, which date fields are
-genuinely immutable, known gotchas with created vs. posted vs. effective date._
-
-## Related patterns
-
-- [Delete detection](../Cross-Cutting/Delete%20Detection%20Strategies.md) — this pattern
-  deliberately defers the delete problem; that file covers your options
-- [Watermark management](../Cross-Cutting/Watermark%20Strategy.md) — watermarks can
-  supplement this pattern but don't solve the delete gap
-- [Full load](Full%20Load.md) — the fallback when partition assumptions break
-- [My source doesn't signal deletes](../decisions/source-has-no-delete-signal.md)
-  — decision tree for handling the delete gap
-
-## Open questions
-
-- What is a reasonable periodic reconciliation cadence for typical F&O
-  transaction tables?
-- Can the overlap window be sized analytically, or is it always a judgment call?
-- Are there F&O entities where no immutable date field exists at all?
+Use [full extraction](Full%20Load.md) when these assumptions don't hold and no suitable [change feed](CDC%20and%20Change%20Feed.md) is available.

@@ -8,62 +8,68 @@ related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 
-## What this is
+A watermark records how far a load has processed its change signal. On the next run, the load rereads from that boundary, applies the changes, and advances the watermark only after success.
 
-A watermark is a stored timestamp marking the boundary between "already processed" and "not yet processed." On every incremental load: query changes since the watermark, advance it when the load succeeds.
+The boundary is useful only if the timestamp covers the changes you care about. A posting date selects a business period; it does not tell you when a row was last exported or changed.
 
-**Always require `SinkModifiedOn`.** If unavailable at record level, use the parquet file's modified timestamp. This is a lake perspective — the file is reloaded, the timestamp advances, and you have a watermark.
+## Choose the signal before the boundary
 
-## The pattern
+For lake-fed loads, use the export's `SinkModifiedOn` where it provides the required change signal. `modifiedDateTime` and export timestamps describe different stages of the pipeline. Verify the behavior of the field in the configured export rather than treating the names as interchangeable.
 
-**1. Store per-table in a control table (not pipeline state):**
+For joined output, include the contributing tables. A customer name in `DirPartyTable` can change without a matching change to `CustTable`. The [dimension pattern](../Gold/Dimension%20Patterns/Dimension%20Incremental%20Load.md) uses `VALUES` and `MAX` to build `SinkMaxModifiedOn` for each joined row.
+
+A file timestamp can identify a file to reload when no row-level signal exists. Treat that as file-level work: it does not identify which rows changed or disappeared.
+
+## Store progress for the load
+
+Use a control row per independently loaded target and scope. Two targets reading the same source must not advance each other's progress. This SQL Server-style example assumes `Customer` names one complete load scope:
+
 ```sql
-CREATE TABLE control.watermarks (
-  table_name VARCHAR(255),
-  last_successful_watermark DATETIME,
-  PRIMARY KEY (table_name)
+CREATE TABLE control.watermarks
+(
+      table_name VARCHAR(255) PRIMARY KEY
+     ,last_successful_watermark DATETIME2(7)
 );
 ```
 
-**2. Record the run start BEFORE querying:**
+Initialize the control row during the first full load. Subsequent runs read the saved value and capture an upper boundary before querying:
+
 ```sql
-SET @run_start = SYSUTCDATETIME();
+SELECT @LastWatermark = wm.last_successful_watermark
+FROM control.watermarks AS wm
+WHERE wm.table_name = 'Customer';
+
+SET @RunStart = SYSUTCDATETIME();
 ```
 
-**3. Query using the last watermark:**
+The following excerpt uses a five-minute overlap to replay rows near the boundary. That interval is an example, not a guarantee against arbitrary arrival delays:
+
 ```sql
-SELECT * FROM silver.Customer
-WHERE SinkModifiedOn > (SELECT last_successful_watermark 
-                         FROM control.watermarks 
-                         WHERE table_name = 'Customer')
+SELECT
+      ct.DataAreaId
+     ,ct.AccountNum
+     ,ct.CustGroup
+     ,ct.SinkModifiedOn
+FROM silver.CustTable AS ct
+WHERE ct.SinkModifiedOn >= DATEADD(MINUTE, -5, @LastWatermark)
+    AND ct.SinkModifiedOn < @RunStart;
 ```
 
-**4. Advance only on success:**
+Apply these rows idempotently, so replay updates the same keys rather than inserting duplicates. After the target work succeeds, record the upper boundary as part of the same committed load state:
+
 ```sql
-IF @pipeline_succeeded = 1
-  UPDATE control.watermarks
-  SET last_successful_watermark = @run_start
-  WHERE table_name = 'Customer';
+UPDATE wm
+SET last_successful_watermark = @RunStart
+FROM control.watermarks AS wm
+WHERE wm.table_name = 'Customer';
 ```
 
-Recording at run start (not run end) ensures you don't skip rows that arrive mid-query.
+A failed load keeps the previous boundary. If target data and control state cannot commit together, recovery must safely replay the interval. Serialize runs that share the same control row.
 
-## The hard parts
+## What the boundary cannot prove
 
-**Source timestamp doesn't update on changes you care about.** Cascading updates, status redefinitions, or out-of-band changes (data fixes) can alter a row without bumping `SinkModifiedOn`. No watermark tuning fixes this — you need a different signal (soft-delete flag, audit table, or periodic reconciliation). See [Delete detection](Delete%20Detection%20Strategies.md).
+Capturing run start avoids advancing past the entire duration of a query, but it doesn't guarantee that all earlier timestamps were visible. Clock differences, delayed exports, and timestamps assigned before commit can still place late rows behind the boundary. Use a source-issued checkpoint when available; otherwise measure delay and reconcile beyond the overlap.
 
-**Clock skew and missed rows.** If source and pipeline clocks drift, naive `> @watermark` can miss rows in flight. Mitigate with small overlap (re-query the last 5-10 minutes, rely on idempotent UPSERT to no-op reprocessed rows).
+Deletes need an explicit event, a retained flag, or a comparison against complete state. Once a row is gone, its old timestamp cannot return it. See [delete detection](Delete%20Detection%20Strategies.md).
 
-**Multi-table coordination.** Single watermark across related tables (order + lines) won't keep them perfectly in sync. See gold/fact-patterns/incremental-date-partition.md for partition-based alternative.
-
-## When NOT to use
-
-- Source reliability is uncertain (you need a full reload fallback — use `@ForceUpdate = 2`)
-- Financial period close requires certainty (use full reload or reconciliation instead)
-- Multiple tables must be perfectly consistent (use partition-based incremental instead)
-
-## F&O specific notes
-
-- `modifiedDateTime` is the business-layer timestamp (what changed in F&O)
-- `SinkModifiedOn` is the export timestamp (when it landed in your lake)
-- Cascading updates (child changes but parent timestamp doesn't move) are a known F&O limitation
+Related tables can also arrive at different times. A watermark or partition rebuild does not make them a consistent snapshot. Coordinate source readiness and check for rows lost through joins. If the timestamp never moves for a relevant change, use [the diagnosis guide](../Decisions/I%20Can%27t%20Trust%20modifiedDateTime.md) and reconcile without relying on that signal.

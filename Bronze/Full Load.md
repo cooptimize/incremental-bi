@@ -4,76 +4,36 @@ layer: bronze
 status: draft
 related:
   - Cross-Cutting/Delete Detection Strategies.md
-  - cross-cutting/layer-strategy-mismatch.md
+  - Bronze/CDC and Change Feed.md
   - Bronze/Partition-Based Incremental.md
 ---
 
-## What this is
+A full load replaces bronze with a complete extraction of the source table. It's a useful starting point when the table fits the extraction window or the source offers no dependable change signal. Rows that have disappeared from the source also disappear from the replacement.
 
-Truncate the bronze target and reload the entire source table on every run.
-No change tracking, no watermarks, no assumptions about what changed.
+The approach is simple, but “complete” matters. A failed page of API results must not turn into a batch of apparent deletions downstream.
 
-The source can be a database (direct query, bulk export to parquet) or an API
-(paginated pull). The core pattern is the same either way. Operational
-differences are minor — APIs add pagination, rate limits, and timeout handling,
-but the load logic is identical.
+## Extract first, publish after success
 
-## When to use it
+Read the source into a separate staging location. For a database export, that may be one bulk operation; for an API, it may be many pages. Validate that the extraction finished before making it the bronze version that silver reads.
 
-- Table is small enough that full reload is cheap
-- No CDC feed is available and partition-based incremental isn't safe
-  (date fields aren't reliably immutable, or deletes matter)
-- After a schema change that requires a clean reload
-- As a periodic reconciliation pass on top of a partition-based incremental
+Keep the last successful version available until the replacement is ready. Clearing the live target before a long extraction makes every timeout a recovery problem and exposes incomplete data to downstream jobs.
 
-## When NOT to use it
+A full extraction also needs a defined scope. If you pull one company, compare or replace that company only. Missing rows mean something only when the old and new extracts cover the same population.
 
-- Table is large and reload time exceeds your SLA
-- Source API has rate limits that make full extraction infeasible
-- You have CDC available — full load is unnecessary cost
+## What a full load costs
 
-## How it works
+Each run reads the entire source, even if only a few rows changed. Measure the extraction time, source load, and API limits before deciding how frequently to run it. A small reference table may cost less to reload than to maintain incrementally; a large transaction table may not fit the available window.
 
-_TODO — cover the basic mechanics: truncate/overwrite target, pull source in
-bulk or pages, write to bronze. For APIs: pagination pattern, handling
-timeouts and restarts mid-pull, idempotency (write to staging location first,
-swap on completion)._
+A paginated extraction can also span hours while the source continues changing. Unless the source provides snapshot consistency, the result reflects a collection interval rather than one instant. That distinction matters when comparing related tables or investigating a missing record.
 
-## The hard parts
+## How it affects silver
 
-**Delete detection is free but implicit.** Records absent from the current
-pull are gone. This is the one bronze pattern where deletes are trivially
-detectable — but only because you pulled everything. Downstream layers need
-to handle this correctly (a record missing from bronze this run may have been
-deleted, or may be a load failure).
+Silver can discover deletions by comparing its keys with the completed bronze extract. It must still choose whether to remove those rows, retain history, or preserve a deletion flag. See [delete detection](../Cross-Cutting/Delete%20Detection%20Strategies.md).
 
-**Cost at scale.** Full load cost scales with table size, not change volume.
-For large F&O transaction tables (GL journal lines, inventory transactions)
-this can be prohibitive.
+A full bronze load does not require a full silver or gold load. It does require useful change information if those layers are to stay incremental. If the extraction rewrites every timestamp, downstream loads may treat every row as changed even when the business data is identical.
 
-**API operational quirks.** For API sources: pagination state is lost on
-failure, so restarts re-pull from the beginning unless you checkpoint.
-Rate limits may force the run to span multiple hours, during which the source
-is changing. The "full load" is actually a snapshot over a window of time,
-not a single consistent point.
+## Still to validate
 
-## F&O specific notes
+This draft needs a concrete extraction example, including pagination checkpoints, restart behavior, and how a completed extract becomes visible atomically. It also needs measurements from an F&O workload; there is no established table-size cutoff in this project.
 
-_TODO — which F&O entities are large enough that full load is impractical,
-Fabric Link as an alternative to direct API extraction for large tables._
-
-## Related patterns
-
-- [Delete detection](../Cross-Cutting/Delete%20Detection%20Strategies.md) — full load makes
-  delete detection simple; downstream patterns still need to handle it
-- [Bronze-full / gold-incremental mismatch](../cross-cutting/layer-strategy-mismatch.md)
-  — common pattern where bronze full-loads but gold tries to stay incremental
-- [Partition-based incremental](Partition-Based%20Incremental.md) — the
-  alternative when full load is too expensive
-
-## Open questions
-
-- For API sources: what's the right checkpointing strategy for a multi-hour
-  paginated pull?
-- At what table size does full load become impractical in typical Fabric
-  pipeline configurations?
+When a full extraction is too expensive, compare [change feeds](CDC%20and%20Change%20Feed.md) with [partition-based extraction](Partition-Based%20Incremental.md). Their deletion coverage is different.

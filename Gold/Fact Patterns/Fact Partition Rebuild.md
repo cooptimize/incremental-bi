@@ -7,91 +7,123 @@ related:
   - Gold/Fact Patterns/Fact Open-Settled Rebuild.md
 ---
 
-For facts whose rows are inserted and deleted but never updated. Delete whole partitions, reload them from silver. The partition is an extraction month (`SinkCreatedMonth`).
+A partition rebuild replaces a complete slice of a fact whenever its source state changes. Replacing the slice also removes transactions that have disappeared from silver, without requiring a separate list of their deleted keys.
 
-## Use case
+This pattern is intended for facts whose transaction values are stable after creation, with later arrivals and removals still possible. It compares partition counts and maximum timestamps; it is not a complete detector of arbitrary updates. Use [open/settled rebuild](Fact%20Open-Settled%20Rebuild.md) when continuing changes are part of the transaction lifecycle.
 
-Posted transactions. A posted GL entry isn't edited in normal operation — corrections write new entries, and an opening-balance cleanup removes rows. Both show up at partition level as rows arriving and rows disappearing, which is all this pattern can see and all it needs.
+## Compare current and previously loaded state
 
-The test: **do an existing fact row's values change?** If yes, this pattern is wrong for that table — use [open/settled rebuild](Fact%20Open-Settled%20Rebuild.md). An update that leaves the row count alone **could be** missed with this approach.
-
-## What the source looks like now
-
-Roll up the change tracker. It is keyed by table, month and day, so the day rows collapse into the month:
+Silver publishes the current summary in its [change tracker](../../Silver/Change%20Tracking%20Partitions.md). Gold records the summary it used after successfully replacing each partition:
 
 ```sql
-SELECT SinkCreatedMonth,
-       MAX(MaxSinkModifiedOn) AS MaxSinkModifiedOn,
-       SUM(RowCount)          AS RowCount
-FROM silver._ChangeTracker
-WHERE SourceTable = 'GeneralJournalAccountEntry'
-GROUP BY SinkCreatedMonth;
-```
-
-## What each partition was built from
-
-Not an aggregate of the fact table — a small metadata table the load writes at the end of every run, holding the tracker values each partition was built from:
-
-```sql
-CREATE TABLE gold._FactLoadState (
-    FactTable         NVARCHAR(128),
-    SinkCreatedMonth  INT,
-    MaxSinkModifiedOn DATETIME,
-    RowCount          INT,
-    PRIMARY KEY (FactTable, SinkCreatedMonth)
+CREATE TABLE gold._FactLoadState
+(
+      FactTable NVARCHAR(128) NOT NULL
+     ,SinkCreatedMonth INT NOT NULL
+     ,MaxSinkModifiedOn DATETIME2(7) NULL
+     ,[RowCount] BIGINT NOT NULL
+     ,PRIMARY KEY (FactTable, SinkCreatedMonth)
 );
 ```
 
-Recording state instead of aggregating the fact avoids a full scan of gold on every run, and avoids false positives when the fact legitimately holds fewer rows than the source — company filters, excluded transaction types, inner joins that drop rows.
+These are source counts, not counts of the fact. The source and fact may have different grains or filters. Comparing their actual results is the separate job of [audit and repair](../Fact%20Audit%20and%20Repair.md).
 
-## Building the work list
-
-Filter to the partitions in play, and what to do with each falls out of which side it exists on: only in the source means insert, only in gold means delete, both means delete and reinsert.
+The following SQL Server-style excerpts cover one whole-table fact load. Capture the completed silver state and gold's last loaded state before selecting work:
 
 ```sql
-SELECT COALESCE(s.SinkCreatedMonth, l.SinkCreatedMonth) AS SinkCreatedMonth,
-       CASE WHEN l.SinkCreatedMonth IS NOT NULL THEN 1 ELSE 0 END AS ToDelete,
-       CASE WHEN s.SinkCreatedMonth IS NOT NULL THEN 1 ELSE 0 END AS ToInsert
+SELECT
+      ctr.SinkCreatedMonth
+     ,MAX(ctr.MaxSinkModifiedOn)    AS [MaxSinkModifiedOn]
+     ,SUM(ctr.[RowCount])           AS [RowCount]
+INTO #SourceState
+FROM silver._ChangeTracker AS ctr
+WHERE ctr.SourceTable = 'GeneralJournalAccountEntry'
+GROUP BY ctr.SinkCreatedMonth;
+
+SELECT
+      fls.SinkCreatedMonth
+     ,fls.MaxSinkModifiedOn
+     ,fls.[RowCount]
+INTO #LoadedState
+FROM gold._FactLoadState AS fls
+WHERE fls.FactTable = 'FactGeneralLedger';
+```
+
+The rollup also works if the tracker holds daily entries within each month. It must contain one consistent granularity, not overlapping monthly and daily totals.
+
+## Build one replacement list
+
+Include partitions from both states. A new source partition needs inserting; a partition that has vanished from silver needs removing from gold. For a partition present on both sides, a changed maximum or count triggers replacement. A missing timestamp is treated conservatively as work to repeat.
+
+```sql
+WITH
+     ComparedPartitions AS
+     (
+         SELECT ss.SinkCreatedMonth
+         FROM #SourceState AS ss
+         UNION
+         SELECT ls.SinkCreatedMonth
+         FROM #LoadedState AS ls
+     )
+SELECT cp.SinkCreatedMonth AS [SinkCreatedMonth]
 INTO #PartitionState
-FROM SourceState s
-FULL OUTER JOIN LoadedState l ON l.SinkCreatedMonth = s.SinkCreatedMonth
+FROM ComparedPartitions AS cp
+LEFT JOIN #SourceState AS ss
+    ON cp.SinkCreatedMonth = ss.SinkCreatedMonth
+LEFT JOIN #LoadedState AS ls
+    ON cp.SinkCreatedMonth = ls.SinkCreatedMonth
 WHERE @ForceUpdate = 2
-   OR l.SinkCreatedMonth IS NULL
-   OR s.SinkCreatedMonth IS NULL
-   OR s.MaxSinkModifiedOn > l.MaxSinkModifiedOn
+    OR ss.SinkCreatedMonth IS NULL
+    OR ls.SinkCreatedMonth IS NULL
+    OR ss.MaxSinkModifiedOn IS NULL
+    OR ls.MaxSinkModifiedOn IS NULL
+    OR ss.MaxSinkModifiedOn <> ls.MaxSinkModifiedOn
+    OR ss.[RowCount] <> ls.[RowCount];
 ```
 
-`SourceState` and `LoadedState` are the two queries above as CTEs. A temp table rather than a third CTE, because the same list drives two statements.
+Validate `@ForceUpdate` before this step. Mode `0` uses the comparison above; mode `2` selects every known partition. Mode `1` uses the audit comparison instead, because a successful earlier load may still have produced the wrong result.
 
-## The load
+## Replace the selected partitions
 
-Drop the flagged partitions:
+Use the same list for deletion and insertion. If a selected partition is now empty in silver, the insert naturally returns no rows for it:
 
 ```sql
-DELETE f
-FROM gold.FactGeneralLedger f
-JOIN #PartitionState p ON p.SinkCreatedMonth = f.SinkCreatedMonth
-WHERE p.ToDelete = 1;
+DELETE fgl
+FROM gold.FactGeneralLedger AS fgl
+INNER JOIN #PartitionState AS ps
+    ON fgl.SinkCreatedMonth = ps.SinkCreatedMonth;
 ```
 
-Reload them:
+The insert below is a minimal projection to show the replacement boundary. It assumes conformed silver fields, including company and the stored cohort; a production fact adds its business attributes and dimension lookups at the intended grain.
 
 ```sql
-INSERT INTO gold.FactGeneralLedger (AccountKey, ..., SinkCreatedMonth, SinkModifiedOn)
-SELECT da.AccountKey, ..., je.SinkCreatedMonth, je.SinkModifiedOn
-FROM silver.GeneralJournalAccountEntry je
-JOIN #PartitionState p ON p.SinkCreatedMonth = je.SinkCreatedMonth AND p.ToInsert = 1
-JOIN gold.DimAccount da ON da.DataAreaId = je.DataAreaId AND da.MainAccountId = je.MainAccountId;
+INSERT INTO gold.FactGeneralLedger
+(
+      DataAreaId
+     ,SourceRecId
+     ,Amount
+     ,SinkCreatedMonth
+     ,SinkModifiedOn
+)
+SELECT
+      gjae.DataAreaId               AS [DataAreaId]
+     ,gjae.RecId                    AS [SourceRecId]
+     ,gjae.AccountingCurrencyAmount AS [Amount]
+     ,gjae.SinkCreatedMonth         AS [SinkCreatedMonth]
+     ,gjae.SinkModifiedOn           AS [SinkModifiedOn]
+FROM silver.GeneralJournalAccountEntry AS gjae
+INNER JOIN #PartitionState AS ps
+    ON gjae.SinkCreatedMonth = ps.SinkCreatedMonth;
 ```
 
-Index the fact on `SinkCreatedMonth`, and update `gold._FactLoadState` for every reloaded partition before the procedure ends.
+After success, replace the loaded-state entries for the selected partitions with the captured `#SourceState` values. Remove entries for vanished partitions. Commit fact data and loaded state together; don't record state from a newer silver version than the one actually used to build the fact.
 
-## @ForceUpdate
+This is the load body, not a complete transaction wrapper. Coordinate source publication, concurrent loads, and reader access before using it in production. A mode `2` recovery also needs to include partitions present in the fact if its loaded-state table has been lost or corrupted.
 
-Levels of trust in the change signal. `0` is the query above — trust the tracker. `1` doesn't: it compares gold to silver by partition and rebuilds what disagrees, which is the only way to catch a row that was offered and silently dropped. See [audit and repair](../Fact%20Audit%20and%20Repair.md). `2` trusts nothing and flags every partition both ways.
+## Limits of the partition signal
 
-## Fatal flaws
+Counts can remain unchanged when an insertion offsets a deletion. An update can also leave the maximum timestamp unchanged. Reconciliation must check the output independently of these two summary values.
 
-- **Denormalized attributes from mutable tables.** An invoice fact carrying a customer group goes stale the moment `CustTable` changes. No GL row moved, so no partition is flagged, and nothing in this pattern can see it. There is no deterministic fix at load time: either keep mutable attributes in a dimension the fact points at, or accept that only reconciliation catches the drift. Decide this when the fact is designed, not when it breaks.
-- **Repointing a table collapses the partitioning.** An initial load, a Synapse Link re-init, or moving a table to a new link re-extracts every row with today's `SinkCreatedOn`. Two things happen: every watermark is rewritten, so every partition looks changed once; and the whole table now sits in one partition, so from then on any change to any row reloads all of it. The first is a one-off, the second is permanent. `SinkCreatedDay` doesn't help — the collapse is into a single day as well. Either accept it for that table, or derive the partition key in silver from a field that survives re-extraction (`CreatedDateTime` where the table has it, or a `RecId` bucket). Reset `_FactLoadState` deliberately rather than discovering it at runtime.
-- **Partition skew generally.** Partitions are only uniform if extraction was. An oversized one costs a full reload of itself every time it moves.
+Changes in joined tables require a mapping to the affected driver partitions. A changed customer attribute cannot be found by monitoring ledger rows alone, and the customer's extraction month is not necessarily the month of its transactions. Keep mutable descriptive attributes in dimensions where appropriate, or explicitly track those dependencies.
+
+The [partition key](../../Cross-Cutting/Partition%20Keys.md) must remain stable or moves must be handled on both sides. Re-extraction can also concentrate history into a large cohort, making every replacement expensive. Daily keys don't help if all rows were extracted on the same day; measure the distribution before relying on small rebuilds.

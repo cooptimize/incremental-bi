@@ -8,57 +8,29 @@ related:
   - Cross-Cutting/Delete Detection Strategies.md
 ---
 
-## What this is
+A snapshot preserves a state that later source changes would otherwise overwrite. Use one when a report needs to answer a historical question that current data cannot answer, such as the inventory position reported at month end.
 
-A snapshot is a preserved copy of data state at a point in time. Instead of
-overwriting records when they change, you keep the prior state alongside the
-new one. The result is a table you can query as-of any point in time.
+The first step is to check whether the source already retains the required history. F&O has date-effective data for areas such as exchange rates and worker assignments. If that history answers the question, load it rather than reconstructing it from periodic observations. Also check that your extraction exposes the historical rows you need.
 
-Snapshots are a legitimate and sometimes necessary pattern. They are also
-frequently reached for when the right answer is simpler.
+## Be precise about the historical question
 
-## Before building a snapshot: check the source
+“What rate applied on this date?” and “What rate did the report show that day?” may have different answers after a backdated correction. The first asks for business-effective history. The second asks for what the pipeline observed at the time.
 
-F&O and most ERP systems already maintain date-effective history for data that
-changes over time: prices, exchange rates, worker assignments, organizational
-hierarchies, tax configurations. This history exists in the source because the
-business needs it there — transactions are posted against the rates and
-assignments that were in effect at the time.
+That distinction determines which dates to retain and whether a later correction should change a prior result. It also prevents a current-state copy with a timestamp from being mistaken for a complete audit trail.
 
-If you need "what was the exchange rate on this date," the answer is in F&O's
-date-effective exchange rate table. Building a snapshot in the BI layer to
-reconstruct that history is duplicating complexity the source already solved.
+## Choose the capture interval
 
-Before designing a snapshot pattern, ask: does the source already track this
-history? If yes, consume it. Don't rebuild it.
+| Approach | What it preserves | Typical use |
+|---|---|---|
+| [Period snapshot](Period%20Snapshot.md) | State captured at scheduled intervals | Daily inventory, period-end balances, AR aging |
+| [Full history snapshot](Full%20History%20Snapshot.md) | Each version the pipeline observes | Attribute history and investigation of changes between periods |
 
-Snapshots belong in the BI layer when:
-- The source doesn't maintain history for data that changes (overwrite in place)
-- You need a point-in-time view of an aggregate or calculated state, not a
-  single record
-- You need period-end reporting where the state at close is distinct from
-  current state (inventory positions, account balances, AR aging)
-- Audit requirements demand a preserved record of what the pipeline saw,
-  regardless of source changes
+A period snapshot cannot show a change that happened and reversed between captures. A history table can preserve that change only if the pipeline receives both versions. Neither approach recreates events the source never exposed.
 
-## What snapshots are not
+## Decide what to retain
 
-Snapshots are not a general solution for tracking change. Applying snapshot
-logic to every dimension in a data model because "things change" is
-over-engineering that adds storage cost, query complexity, and pipeline
-fragility without a clear business requirement driving it.
+Capture the grain and attributes required by the historical question. Copying every table every day adds storage and query work without necessarily preserving useful business history. For a period-end balance, a position by account and company may be the required result; for an attribute investigation, individual record versions may matter.
 
-If a report needs current state, use current state. If a report needs
-historical state, find out whether the source already provides it before
-building a layer to manufacture it.
+Define retention, correction, and deletion behavior before consumers depend on the table. A source deletion may end the current version while earlier observations remain, but the required behavior depends on what the history is meant to represent.
 
-## Approaches
-
-- [Period snapshot](Period%20Snapshot.md) — capture state at regular intervals
-  (daily, monthly, period-end). Common for balances and positions.
-- [Full history](Full%20History%20Snapshot.md) — append every change as it arrives.
-  Higher storage cost, richer query capability.
-
-## Open questions
-
-_TODO_
+The snapshot articles are drafts. They still need tested load examples and an explicit treatment of late data, corrections, and source-provided history.

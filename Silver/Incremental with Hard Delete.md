@@ -5,196 +5,98 @@ status: working
 related:
   - Cross-Cutting/Watermark Strategy.md
   - Cross-Cutting/Delete Detection Strategies.md
-  - silver/schema-drift.md
+  - Silver/Change Tracking Partitions.md
+  - Silver/Full Load.md
 ---
 
-## What this is
+This pattern keeps silver as current state: update changed records, insert new ones, and physically remove confirmed deletions. Consumers can query the table without adding a deletion filter to every join.
 
-Hard delete at silver: physically remove deleted rows. Silver shows only current state. Data was deleted for a reason — don't keep tombstones.
+The tradeoff is that a removed row no longer carries its own change signal. Silver must publish enough information for gold to remove or rebuild the affected output. A partition tracker helps, but a maximum timestamp by itself cannot describe every deletion.
 
-Uses a change tracking table to record `MAX(SinkModifiedOn)` per source table per `SinkCreatedMonth/SinkCreatedDay`, enabling gold to know which partitions changed without rescanning all source tables.
+## Establish what bronze contains
 
-## When to use it
+There are two different inputs:
 
-- Deletions must be reflected in gold immediately
-- Storage cost of soft-delete history is unacceptable
-- Audit trail is maintained separately (if at all)
-- Bronze retains full history (you can always re-extract if needed)
+- A complete current-state population lets silver infer deletion from absence.
+- A change batch requires explicit deleted keys or retained deletion flags. Absence from that batch means nothing about whether a record still exists.
 
-## When NOT to use it
+The example below uses the first contract. `bronze.CustTable` is already a completed, deduplicated current-state table. If your export retains deletion markers, normalize those before using this example; do not point it directly at a raw event batch.
 
-- Gold must support incremental loads without periodic full reloads
-- Deletions signal corrections/reversals that downstream must detect
-- You cannot afford periodic gold rebuilds to catch deletion cascades
+## Merge the company being loaded
 
-## The pattern
-
-### 1. Change tracking table (metadata)
-
-Track `MAX(SinkModifiedOn)` per table per extraction period:
+This SQL Server-style example compares each customer's timestamp with its stored silver timestamp. It preserves the source keys and fields needed by the dimension load:
 
 ```sql
-CREATE TABLE silver._ChangeTracker (
-  SourceTable NVARCHAR(255),
-  SinkCreatedMonth INT,          -- YYYYMM of SinkCreatedOn
-  SinkCreatedDay INT,            -- YYYYMMDD of SinkCreatedOn (optional, for daily tracking)
-  MaxSinkModifiedOn DATETIME,
-  RowCount INT,
-  LastUpdatedDateTime DATETIME DEFAULT GETDATE(),
-  PRIMARY KEY (SourceTable, SinkCreatedMonth, SinkCreatedDay)
-);
-
-CREATE INDEX idx_change_tracker_modified 
-  ON silver._ChangeTracker(MaxSinkModifiedOn DESC);
-```
-
-### 2. After loading each source table, update tracker
-
-```sql
--- After loading silver.Customer from bronze.Customer
-MERGE INTO silver._ChangeTracker t
-USING (
-  SELECT 
-    'Customer' AS SourceTable,
-    YEAR(c.SinkCreatedOn) * 100 + MONTH(c.SinkCreatedOn) AS SinkCreatedMonth,
-    YEAR(c.SinkCreatedOn) * 10000 + MONTH(c.SinkCreatedOn) * 100 
-      + DAY(c.SinkCreatedOn) AS SinkCreatedDay,
-    MAX(c.SinkModifiedOn) AS MaxSinkModifiedOn,
-    COUNT(*) AS RowCount
-  FROM silver.Customer c
-  GROUP BY YEAR(c.SinkCreatedOn) * 100 + MONTH(c.SinkCreatedOn),
-           YEAR(c.SinkCreatedOn) * 10000 + MONTH(c.SinkCreatedOn) * 100 
-             + DAY(c.SinkCreatedOn)
-) s
-ON t.SourceTable = s.SourceTable 
-  AND t.SinkCreatedMonth = s.SinkCreatedMonth 
-  AND t.SinkCreatedDay = s.SinkCreatedDay
-WHEN MATCHED THEN
-  UPDATE SET MaxSinkModifiedOn = s.MaxSinkModifiedOn, RowCount = s.RowCount, LastUpdatedDateTime = GETDATE()
-WHEN NOT MATCHED THEN
-  INSERT (SourceTable, SinkCreatedMonth, SinkCreatedDay, MaxSinkModifiedOn, RowCount, LastUpdatedDateTime)
-  VALUES (s.SourceTable, s.SinkCreatedMonth, s.SinkCreatedDay, s.MaxSinkModifiedOn, s.RowCount, GETDATE());
-```
-
-### 3. Hard delete on ingest
-
-Remove records that no longer exist in source:
-
-```sql
--- Upsert + hard delete
-MERGE INTO silver.Customer t
-USING bronze.Customer s
-  ON t.DataAreaId = s.DataAreaId AND t.CustomerId = s.CustomerId
-WHEN MATCHED AND s.SinkModifiedOn > (
-  SELECT MAX_SINK_MODIFIED_ON FROM silver._ChangeTracker 
-  WHERE SourceTable = 'Customer'
-) THEN
-  UPDATE SET 
-    t.CustomerName = s.CustomerName,
-    t.CustomerGroup = s.CustomerGroup,
-    t.SinkModifiedOn = s.SinkModifiedOn
+WITH
+     CompanyCustomers AS
+     (
+         SELECT
+               ct.DataAreaId
+              ,ct.AccountNum
+              ,ct.CustGroup
+              ,ct.RecId
+              ,ct.Party
+              ,ct.SinkCreatedOn
+              ,ct.SinkModifiedOn
+         FROM bronze.CustTable AS ct
+         WHERE ct.DataAreaId = @DataAreaId
+     )
+MERGE INTO silver.CustTable AS tgt
+USING CompanyCustomers AS src
+    ON tgt.DataAreaId = src.DataAreaId
+    AND tgt.AccountNum = src.AccountNum
+WHEN MATCHED AND
+(
+       @ForceUpdate = 1
+    OR tgt.SinkModifiedOn IS NULL
+    OR src.SinkModifiedOn IS NULL
+    OR tgt.SinkModifiedOn < src.SinkModifiedOn
+) THEN UPDATE SET
+      tgt.CustGroup = src.CustGroup
+     ,tgt.RecId = src.RecId
+     ,tgt.Party = src.Party
+     ,tgt.SinkModifiedOn = src.SinkModifiedOn
 WHEN NOT MATCHED BY TARGET THEN
-  INSERT (DataAreaId, CustomerId, CustomerName, CustomerGroup, SinkCreatedOn, SinkModifiedOn)
-  VALUES (s.DataAreaId, s.CustomerId, s.CustomerName, s.CustomerGroup, s.SinkCreatedOn, s.SinkModifiedOn)
-WHEN NOT MATCHED BY SOURCE THEN
-  DELETE;  -- Hard delete: records not in source are gone
+    INSERT
+    (
+          DataAreaId
+         ,AccountNum
+         ,CustGroup
+         ,RecId
+         ,Party
+         ,SinkCreatedOn
+         ,SinkModifiedOn
+    )
+    VALUES
+    (
+          src.DataAreaId
+         ,src.AccountNum
+         ,src.CustGroup
+         ,src.RecId
+         ,src.Party
+         ,src.SinkCreatedOn
+         ,src.SinkModifiedOn
+    )
+WHEN NOT MATCHED BY SOURCE AND tgt.DataAreaId = @DataAreaId THEN
+    DELETE;
 ```
 
-### 4. Gold queries the tracker to find changed partitions
+Keep the source complete for the company. Filtering it by watermark would cause the deletion clause to remove unchanged rows. The target-side company condition prevents the same clause from deleting every other company's customers.
 
-```sql
--- Find which SinkCreatedMonth partitions changed since last load
-SELECT DISTINCT SourceTable, SinkCreatedMonth
-FROM silver._ChangeTracker
-WHERE MaxSinkModifiedOn > (
-  SELECT watermark FROM gold._LoadWatermark WHERE target_table = 'SalesFact'
-)
-ORDER BY SinkCreatedMonth;
-```
+This is the merge body, not the whole procedure. Validate `@ForceUpdate` before running it; mode `2` uses the [full-load path](Full%20Load.md) for the requested scope. Commit the target changes and tracker state together, or prevent gold from reading until both are published.
 
-## The hard parts
+## Tell gold what changed
 
-### Irreversibility
+Refresh [change tracking partitions](Change%20Tracking%20Partitions.md) after the merge. The tracker records both maximum timestamps and counts. Gold compares those values with the state used for its previous load, including partitions that have disappeared entirely.
 
-Once deleted from silver, the row is gone. You cannot reconstruct it without re-extracting from bronze.
+A deletion does not necessarily advance the maximum timestamp of the surviving rows. Counts catch many such changes, but a delete and insert can offset each other. Periodic reconciliation is still required for gaps in the signal.
 
-**Mitigation:**
-- Bronze must retain full history
-- Archive old silver data periodically (partition pruning) if storage is constrained
-- Document retention policy: "silver keeps X years; older data is archived"
+If only one source table in a fact changes, gold must map that change to the affected fact keys or partitions. The extraction month of a header or lookup row is not automatically the extraction month of its dependent transactions.
 
-### Gold cascades on dimension deletions
+## Keep recovery and history explicit
 
-If a customer is deleted from silver, gold facts remain orphaned (orders without a valid customer).
+Hard deletion is suitable for a current-state table, not a substitute for a retention policy. Recovery requires retained inputs, snapshots, or backups. A bronze table that also represents only current state cannot reconstruct a deleted historical row.
 
-**Solutions:**
-1. Gold does periodic full reloads (`@ForceUpdate = 2`) to catch dimension deletions
-2. Gold tolerates orphaned facts (LEFT JOINs, filter in reports)
-3. Gold soft-deletes facts when dimension deleted (contradicts hard-delete philosophy; use solution 1 or 2)
+Deleting a customer from silver also does not decide what gold should do with its historical dimension member. Preserve referenced keys or coordinate fact recovery according to the reporting requirement. See [dimension incremental load](../Gold/Dimension%20Patterns/Dimension%20Incremental%20Load.md).
 
-### Change tracker sync
-
-If a source table is updated but tracker is not, gold won't know about the change.
-
-**Mitigation:**
-- Update tracker immediately after loading source table (same pipeline step)
-- Validate: tracker row counts match actual table row counts
-- Monthly reconciliation: compare tracker against actual tables, fix mismatches
-
-## F&O patterns
-
-**GL deletions:** F&O rarely hard-deletes GL entries. More common: reversal transactions (post an offsetting entry). Treat as appends, not deletes.
-
-**Sales orders:** Cancellations are status changes, not deletes. Check `SalesStatus` column before assuming hard delete.
-
-**Customer/Vendor:** Inactive status is more common than deletion. Use status columns as soft indicators.
-
-**Synapse Link:** Deletions on any entity trigger `SinkModifiedOn` update, so change tracker catches them.
-
-## Safety guardrails
-
-1. Bronze must retain full history (you depend on it for recovery)
-2. Update change tracker immediately after each source load
-3. Monthly validation: tracker counts vs. actual table counts
-4. Document which entities have hard deletes vs. status changes
-5. Plan gold reload frequency to handle dimension deletion cascades
-
-## Related patterns
-
-- [Full load (silver)](Full%20Load.md) — Simple truncate/reload fallback
-- [Watermark management](../Cross-Cutting/Watermark%20Strategy.md) — How to store/advance gold watermarks based on change tracker
-- [Schema drift](silver/schema-drift.md) — Handling schema changes alongside incremental loads
-
-## Schema changes
-
-New fields, type changes, enum redefinitions: trigger a full reload.
-
-```sql
--- On schema change, full reload the table and reset change tracker
-TRUNCATE TABLE silver.Customer;
-
-INSERT INTO silver.Customer (...)
-SELECT ... FROM bronze.Customer;
-
--- Reset change tracker for this table
-DELETE FROM silver._ChangeTracker WHERE SourceTable = 'Customer';
-
--- Then repopulate tracker with current state
-MERGE INTO silver._ChangeTracker t
-USING (
-  SELECT 
-    'Customer' AS SourceTable,
-    YEAR(SinkCreatedOn) * 100 + MONTH(SinkCreatedOn) AS SinkCreatedMonth,
-    YEAR(SinkCreatedOn) * 10000 + MONTH(SinkCreatedOn) * 100 + DAY(SinkCreatedOn) AS SinkCreatedDay,
-    MAX(SinkModifiedOn) AS MaxSinkModifiedOn,
-    COUNT(*) AS RowCount
-  FROM silver.Customer
-  GROUP BY YEAR(SinkCreatedOn) * 100 + MONTH(SinkCreatedOn),
-           YEAR(SinkCreatedOn) * 10000 + MONTH(SinkCreatedOn) * 100 + DAY(SinkCreatedOn)
-) s
-ON t.SourceTable = s.SourceTable AND t.SinkCreatedMonth = s.SinkCreatedMonth AND t.SinkCreatedDay = s.SinkCreatedDay
-WHEN MATCHED THEN UPDATE SET MaxSinkModifiedOn = s.MaxSinkModifiedOn, RowCount = s.RowCount
-WHEN NOT MATCHED THEN INSERT VALUES (s.SourceTable, s.SinkCreatedMonth, s.SinkCreatedDay, s.MaxSinkModifiedOn, s.RowCount, GETDATE());
-```
-
-Gold will see the reset change tracker and reload affected partitions on next run (`@ForceUpdate = 2` or partition reload of affected months).
+Schema changes and changed transformations need a deliberate reload and downstream reconciliation. Resetting a tracker without changing the values gold compares will not, by itself, force gold to rebuild.

@@ -6,31 +6,38 @@ related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 
-Partition on extraction time, stored as an integer column, computed once in silver. Everything downstream joins on it instead of recomputing it.
+A stored partition key gives silver, its change tracker, and gold a shared unit of replacement. When gold rebuilds a month, the key identifies exactly which rows belong to that month without deriving the boundary differently in each query.
 
-## The column
+The patterns here use `SinkCreatedMonth` for extraction cohorts: rows grouped by their extraction timestamp. A cohort is a loading boundary; reports can still use posting or transaction dates for business analysis.
+
+## Derive the key in silver
+
+These expressions show the monthly and daily forms. Store the required key during the silver load, and carry it into the tracker and fact:
 
 ```sql
-YEAR(SinkCreatedOn) * 100 + MONTH(SinkCreatedOn) AS SinkCreatedMonth,
-YEAR(SinkCreatedOn) * 10000 + MONTH(SinkCreatedOn) * 100
-    + DAY(SinkCreatedOn)                                AS SinkCreatedDay
+SELECT
+      YEAR(ct.SinkCreatedOn) * 100
+        + MONTH(ct.SinkCreatedOn)   AS [SinkCreatedMonth]
+     ,YEAR(ct.SinkCreatedOn) * 10000
+        + MONTH(ct.SinkCreatedOn) * 100
+        + DAY(ct.SinkCreatedOn)     AS [SinkCreatedDay]
+FROM silver.CustTable AS ct;
 ```
 
-Write it at silver load time — or as a persisted computed column where the platform allows one — on every silver table that feeds a partition-reloaded fact, on `silver._ChangeTracker`, and on the fact table itself. Gold never derives it.
+Keep `Created` in the name so it cannot be confused with a modification period. The fact should retain the driver's stored partition key, rather than derive a new one from another joined table.
 
-Name the interval off the timestamp it came from. `SinkCreatedMonth`, not `SinkMonth`: `SinkModifiedOn` exists too, and a name that doesn't say created or modified doesn't say anything.
+## Establish stability
 
-## Why extraction time and not a business date
+The replacement pattern needs a row to remain in the same partition, or for the load to track both its old and new partitions when it moves. Do not infer that stability from the name `SinkCreatedOn` alone. Microsoft documents export-mode-specific behavior for the sink timestamps in [F&O Synapse Link metadata](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-select-fno-data).
 
-- **Backdating.** F&O posts an order today with an effective date in March. Partition on the business date and the row lands in March, outside any recent reload window, and the change never reaches gold.
-- **Extraction time never moves.** A row's partition is fixed the moment it's written, so silver, the change tracker, and gold always agree on what a partition holds.
+Before adopting extraction cohorts, confirm what happens on updates and reinitialization in your configured export. If the field is rewritten, either preserve an assigned cohort in silver or design explicit handling for partition moves. A full silver reload must preserve or deliberately reset that contract too.
 
-Effective date, posting date, and transaction date all fail the same way.
+Business dates have a different concern: a new transaction can be posted into an old period. A recent-period-only scan would miss it. Business-date partitioning can work when the tracker identifies changes in every affected period, but a recent-date window alone is insufficient.
 
-This is a different decision from [bronze partition-based incremental](../Bronze/Partition-Based%20Incremental.md), which windows on a business date because at that point extraction time doesn't exist yet. That pattern is choosing what to pull; this one is choosing what to replace.
+## Choose the replacement size
 
-## Granularity
+Start with monthly partitions when their rebuild cost fits the load window. Daily partitions help only when rows are actually spread across days. An initial extraction containing years of history may put the whole table into one day, so changing the date format does not distribute that work.
 
-Month by default. Go to `SinkCreatedDay` when a single month is large enough that reloading it hurts — usually the initial-load partition, which holds the entire history.
+Match tracker and reload granularity where possible. Daily tracker rows can feed a monthly load by summing counts and taking the maximum timestamp, but the extra detail should have a consumer. Don't discard old tracker state merely because the data is old: gold still needs to discover changes and removals there.
 
-Track at the granularity gold reloads at. A tracker keyed by day feeding a fact that reloads by month just accumulates rows nobody reads.
+See [change tracking partitions](../Silver/Change%20Tracking%20Partitions.md) for maintaining state and [fact partition rebuild](../Gold/Fact%20Patterns/Fact%20Partition%20Rebuild.md) for handling changed or vanished partitions. [Bronze partition-based extraction](../Bronze/Partition-Based%20Incremental.md) is a separate choice about what the source pull includes.

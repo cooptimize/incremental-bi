@@ -8,69 +8,30 @@ related:
   - Cross-Cutting/Delete Detection Strategies.md
 ---
 
-## What this is
+A full history snapshot retains a new version whenever the pipeline observes a record changing. Instead of overwriting the previous values, the load closes the old version's interval and appends the new one.
 
-Append every observed state of a record as it changes. The table grows with
-each change event — every version of a record exists as its own row, with
-effective dates marking when that version was current.
+Use it when reports need changes between scheduled snapshots and the source does not already preserve the required history. The result is a history of observed versions; calling it a complete audit trail requires evidence that every relevant change reaches the pipeline.
 
-Unlike period snapshots, you're not capturing state at intervals. You're
-capturing state at every change. The result is a complete audit trail.
+## Record the version boundaries
 
-## When to use it
+Each version needs the record's key, the attributes being tracked, and dates identifying its interval. The load closes the previous version and opens the next as one operation so readers don't see overlapping current versions or a gap caused by a partial failure.
 
-- Audit requirements demand a preserved record of every state a record passed
-  through
-- The source overwrites in place and you need to reconstruct history the source
-  discards
-- Query patterns require "what did this record look like at any arbitrary point
-  in time," not just at regular intervals
+Decide whether the interval describes business-effective time or observation time. A correction received today may apply to last month. Assigning today's arrival time as its business start date would answer a different question.
 
-## When NOT to use it
+Retries also need stable behavior. Replaying the same event should not create a second copy of the same version. The event identity and ordering rules depend on how the source exposes changes.
 
-- The source already tracks this history with date-effective rows — consume
-  that instead, don't rebuild it
-- The business requirement is period-end reporting — a period snapshot is
-  cheaper and simpler
-- Change frequency is high — a record that changes daily produces 365 rows per
-  year per record; at scale this becomes expensive fast
+## The history is only as complete as the input
 
-## How it works
+A reliable change feed can provide several versions between pipeline runs. A daily comparison of current-state tables sees only the state at each comparison. If a customer changes twice and returns to its earlier value before the next scan, that scan cannot reconstruct either change.
 
-_TODO — cover: table structure (all columns + valid_from, valid_to, is_current),
-how rows are inserted on change detection, how valid_to is set on the prior
-row, querying as-of a date._
+Comparing a full extract against the last observed state is still useful when that level of history meets the requirement. Be explicit about the capture interval rather than promising every intermediate state.
 
-## The hard parts
+## Handle the end of a record
 
-**Requires a reliable change signal.** Full history only works if you know when
-something changed. If your bronze is a full load, you need to diff against the
-prior state to detect changes — which is expensive on large tables. If your
-bronze is CDC, you get changes directly but need to handle ordering carefully.
+A deletion can close the final version, append a deletion marker, or require removal from retained history. These choices answer different business requirements. Define the expected query result after deletion and preserve enough information to implement it consistently. See [delete detection](../Cross-Cutting/Delete%20Detection%20Strategies.md).
 
-**Deletions are philosophically ambiguous.** When a source record is deleted,
-do you end-date the last version and keep it? Hard-delete it from history? Keep
-it with a deleted flag? The right answer depends on why records get deleted in
-the source and what the business needs from the history.
+High-churn tables can produce many versions, so estimate growth and test as-of queries at the intended retention period. If the requirement is only a monthly position, a [period snapshot](Period%20Snapshot.md) is usually easier to reason about.
 
-**Storage and query cost.** High-churn tables generate large history tables
-fast. Queries against them require filtering on effective dates, which can be
-expensive without careful partitioning and indexing.
+## Still to validate
 
-## F&O specific notes
-
-_TODO — which F&O entities change frequently enough to make full history
-expensive, interaction with F&O's own audit log features._
-
-## Related patterns
-
-- [Snapshots overview](Snapshots%20Overview.md) — including when to check the source
-  before building this
-- [Period snapshot](Period%20Snapshot.md) — cheaper alternative when
-  interval-based history is sufficient
-- [Delete detection](../Cross-Cutting/Delete%20Detection%20Strategies.md) — the deletion
-  question is particularly sharp here
-
-## Open questions
-
-_TODO_
+This draft needs a tested versioning load, including ordering, replay, late corrections, deletions, and interval queries. It also needs an F&O example showing why source-provided date-effective history is insufficient for the chosen requirement.

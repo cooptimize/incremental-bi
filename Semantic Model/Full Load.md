@@ -6,89 +6,32 @@ related:
   - Semantic Model/Power BI Incremental Refresh with Deletions.md
 ---
 
-## What this is
+A full refresh reloads the imported tables from gold. Start here when the refresh fits the available window: the next completed refresh reflects rows that were added, changed, or removed from the queried source population.
 
-Full dataset refresh. Power BI pulls all data from the source tables on every refresh cycle. This is the default and recommended approach for most scenarios.
+Use measured refresh time and resource use to decide when that stops being practical. Dataset size alone does not establish a useful cutoff; source queries, model shape, capacity, and refresh frequency all affect the result.
 
-**Core principle:** Simple, reliable, and correct. The entire semantic model is rebuilt from the gold layer on each run.
+## Refresh from a completed gold load
 
-## When to use it
+Schedule the import after the required gold tables have been published. Refreshing while facts or dimensions are being replaced can expose inconsistent inputs even when the refresh itself succeeds.
 
-- Dataset is under 1-2 GB
-- Refresh frequency is 1x daily or less
-- Refresh time fits your SLA (typically 30 minutes to 2 hours for large datasets)
-- You want simplicity and correctness over optimization
-- Delete handling is automatic (deleted rows don't appear on refresh)
+Keep the model queries focused on the required columns and reporting grain. A full data refresh does not require recreating the model definition, relationships, or measures from scratch. It reloads the data those objects use.
 
-**This is the right choice for the vast majority of Power BI semantic models.** Only optimize if full load is actually the bottleneck.
+For setup and connection requirements, use Microsoft's [scheduled refresh documentation](https://learn.microsoft.com/en-us/power-bi/connect-data/refresh-scheduled-refresh). This article concerns import tables without an incremental policy; a routine refresh of a table with such a policy can still leave historical partitions untouched.
 
-## When NOT to use it
+## Find the expensive part
 
-- Dataset is massive (> 5-10 GB) and refresh window is tight (hourly or sub-hourly required)
-- Full load time exceeds your SLA repeatedly
-- You need incremental refresh for business reasons (e.g., near-real-time dashboard)
+Before changing the refresh strategy, establish where time is spent:
 
-If full load is slow, the bottleneck is usually:
-1. Gold layer queries are expensive (fix the query, not the refresh strategy)
-2. Network latency to Fabric/Synapse (network problem, not refresh problem)
-3. Gateway capacity is constrained (add capacity, not incremental refresh)
+- **Source work:** expensive views, repeated joins, or scans that could be handled in the gold load.
+- **Data transfer:** more columns or detail than the report needs, or a constrained connection or gateway.
+- **Model processing:** a large imported result or transformations that add significant work after retrieval.
 
-Incremental refresh adds complexity. Use it only if you've verified full load is actually the constraint.
+Change the part that is limiting the load and measure again. Aggregating data or dividing a model may help, but each changes what consumers can query and should follow the reporting requirements.
 
-## How it works
+## What full refresh does not fix
 
-1. Power BI opens a connection to the gold layer (SQL, Synapse, Fabric)
-2. Queries run: one per table in the semantic model
-3. All data is pulled and loaded into Power BI's memory
-4. Relationships are rebuilt, measures recalculate
-5. Semantic model is ready
+If gold missed a deletion, the refreshed model will still contain it. If a source query drops transactions, reloading the same query repeats the omission. Refresh completion establishes that processing finished, not that the warehouse is correct.
 
-No partition tracking. No watermarks. No deletion complexity. Just pull everything.
+Keep source-to-gold reconciliation and a report-level check for the measures that matter. A full refresh simplifies the propagation of gold changes; it does not replace those checks.
 
-## Configuration in Power BI
-
-In Power BI Desktop or Service:
-- Go to semantic model settings
-- Data source credentials: set connection string to gold layer
-- Refresh schedule: set daily or as needed
-- No incremental refresh enabled
-
-That's it.
-
-## Performance tuning before considering incremental
-
-1. **Optimize gold layer queries:** Are dimensions and facts queried efficiently? Check execution plans.
-2. **Reduce column count:** Only import columns actually used in reports. Remove staging/debugging columns.
-3. **Aggregate where possible:** If reports only need summarized data, aggregate in gold instead of pulling detail.
-4. **Partition the semantic model by business domain:** Multiple smaller datasets refresh faster and are easier to maintain than one monolithic model.
-5. **Use Direct Query for historical data:** If only current period needs to be imported and historical data can be queried on-demand, use hybrid import/DirectQuery.
-
-These changes often cut refresh time in half without the complexity of incremental refresh.
-
-## F&O specific patterns
-
-For most F&O implementations:
-- Customer, vendor, item dimensions: < 1 GB, import as-is
-- GL balances fact: import monthly snapshot or current period detail + historical summary
-- Sales/purchase orders fact: import current year, archive prior years
-
-Full load is sufficient.
-
-## When incremental refresh might be needed
-
-Only if:
-- Dataset is genuinely massive (> 10 GB) AND refresh must be hourly or more frequently
-- Incremental refresh time savings are measured (at least 50% reduction) compared to full load
-- Delete handling is accounted for (see `incremental-period-with-deletes.md`)
-- You have capacity to maintain partition tracking and watermark logic
-
-This is rare.
-
-## Related patterns
-
-- [Incremental refresh with deletes](Power%20BI%20Incremental%20Refresh%20with%20Deletions.md) — Advanced: only for very large datasets with tight SLA
-
-## Open questions
-
-- At what dataset size does incremental refresh actually save time vs. full load?
-- What's the typical cost (in operational complexity) of maintaining partition tracking?
+When rereading unchanged history is the measured bottleneck, consider [incremental refresh with deletions](Power%20BI%20Incremental%20Refresh%20with%20Deletions.md). Include historical corrections and deletions in that design before narrowing the refresh window.

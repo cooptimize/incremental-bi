@@ -5,71 +5,32 @@ status: draft
 related:
   - Snapshots/Snapshots Overview.md
   - Snapshots/Full History Snapshot.md
-  - gold/incremental-aggregate-recalc.md
 ---
 
-## What this is
+A period snapshot records a dataset at a regular interval: daily inventory, month-end AR aging, or balances at close. Each capture carries a snapshot date so reports can compare positions over time without trying to reconstruct them from today's source state.
 
-Capture the full state of a dataset at regular intervals — daily, weekly,
-monthly, or at period close. Each snapshot is a row or partition stamped with
-the snapshot date. You don't track individual changes between snapshots; you
-track what things looked like at each interval.
+Use it when those intervals answer the business question. If the source already preserves the required period-end position, load that result instead of rebuilding it.
 
-Common examples: inventory positions at end of day, account balances at period
-close, AR aging as of month end.
+## Define one capture
 
-## When to use it
+Choose the snapshot grain first. For inventory, that might be one row per company, item, and warehouse on each snapshot date. Store the measures and attributes needed to interpret that position, along with the date identifying the capture.
 
-- The business asks "what did X look like at period close" and the source
-  doesn't retain that state
-- Reporting needs are interval-based, not continuous (month-end, quarter-end)
-- The unit of interest is an aggregate or position, not an individual record's
-  change history
+The load must distinguish a retry from a new snapshot. Running the same capture twice should not double the period's balance. The implementation needs a way to replace an incomplete capture or recognize a completed one before publishing it.
 
-## When NOT to use it
+A snapshot date also needs a clear meaning: source business date, close date, and pipeline execution time are not interchangeable. If the job runs after midnight, readers still need to know which position it represents.
 
-- The source already maintains period-end history — consume that instead
-- You need finer granularity than the snapshot interval (daily snapshot misses
-  intra-day changes)
-- The dataset is large and daily snapshots would create unmanageable storage
-  growth — evaluate whether full history or a calculated approach is cheaper
+## Corrections and deletions
 
-## How it works
+A record deleted between captures is absent from the next snapshot and remains in the earlier one. That is useful when preserving what was observed, but comparisons must account for records appearing and disappearing.
 
-_TODO — cover: snapshot table structure (all columns + snapshot_date),
-partitioning by snapshot date, insert pattern (never update, only insert),
-how to query as-of a specific date._
+Backdated data requires a separate decision. If a late transaction changes March after the March snapshot was published, you can retain the original observation, restate March, or retain both versions. Choose based on the reporting requirement and make the result distinguishable to consumers.
 
-## The hard parts
+## Size the history you need
 
-**Deletions.** If a record is deleted from the source between snapshots, it
-will be absent from the next snapshot but present in all prior ones. Depending
-on the use case this is correct behavior (you're preserving history) or a
-problem (queries that compare snapshots need to account for records that appear
-and disappear).
+A daily copy of ten million rows adds about 3.65 billion rows in a year. Measure the required grain, capture frequency, and retention before choosing daily detail by default. Partitioning helps manage the result but does not remove the cost of creating and retaining it.
 
-**Storage growth.** A period snapshot of a large table grows linearly with
-time. A daily snapshot of a 10M row table is 3.65B rows per year. This is
-manageable with partitioning and retention policies but requires deliberate
-design.
+A [full history snapshot](Full%20History%20Snapshot.md) may use less space when few records change, but it introduces different detection and as-of query requirements. It is not automatically the cheaper choice.
 
-**Late-arriving source data.** If the source is backdated after the snapshot
-is taken, the snapshot is wrong and you have no record of what changed. Decide
-upfront whether snapshots are immutable or whether corrections are applied.
+## Still to validate
 
-## F&O specific notes
-
-_TODO — F&O period close behavior, which entities make sense as period
-snapshots, interaction with F&O ledger periods._
-
-## Related patterns
-
-- [Snapshots overview](Snapshots%20Overview.md)
-- [Full history](Full%20History%20Snapshot.md) — alternative when you need change
-  granularity between intervals
-- [Incremental aggregate recalculation](../gold/incremental-aggregate-recalc.md)
-  — related problem when aggregates need to be recalculated over time
-
-## Open questions
-
-_TODO_
+This draft needs a worked F&O example covering the table structure, snapshot date, retry behavior, publication of a completed capture, and correction policy. Period-close timing and late source data must be part of that example.

@@ -6,22 +6,32 @@ related:
   - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 
-Skip gold. Point the semantic model at silver views and let Power BI do the modeling.
+Pointing Power BI at silver views avoids building a persisted gold layer. For a small model with straightforward transformations, that can be a reasonable way to get reporting into use quickly.
 
-## When it holds
+The decision becomes harder when the model needs shared dimensions, stable surrogate keys, or expensive fact transformations. Views still need to produce those results whenever the import refresh reads them.
 
-D365 is the only source, one business process, minimal transformation, and nobody expects it to grow. Development is fast because there is no dimensional model to build. If a slicer needs a column that lives in another table, you have already outgrown it.
+## Where it fits
 
-## Fatal flaw: you are stuck with string keys
+Consider this approach when silver already has the required reporting grain, relationships are simple, and the source queries fit the refresh window. A small number of predictable joins may be entirely adequate.
 
-Relationships land on natural keys — `AccountNum`, `ItemId`, `CustAccount`, usually with `DataAreaId` concatenated on. VertiPaq handles those far worse than a dense integer surrogate: larger dictionaries, more expensive relationship joins, more memory. It surfaces as slow slicers and visuals well before the data volume looks big enough to explain it.
+Keep the view contract deliberate. Business-facing names, selected columns, and a defined grain make the semantic model easier to maintain even when the data isn't persisted in gold.
 
-The obvious fix isn't available. Getting an integer key onto the fact means joining the fact back to the dimension to fetch `RecId`, and in a view that join runs on every query rather than once at load. Materializing it is the gold layer you skipped. `RecId` is also a sparse `bigint` rather than a dense sequence, so it's second-best even where you can get it.
+## Keys still need a design
 
-## Fatal flaw: complexity has no escape hatch
+F&O natural keys often need company scope, such as `DataAreaId` plus `AccountNum`. The model needs a consistent relationship key on both sides. If you want a warehouse surrogate key, its assignment must remain stable between refreshes; generating a fresh row number in a view is not a durable mapping.
 
-The moment a fact needs a union, a `COALESCE` across sources, or more than a couple of joins, the view has nowhere to go. Nothing to index, nothing to precompute, no incremental load — every refresh re-executes the whole thing, and serverless bills per byte scanned.
+A source `RecId` may be useful where its scope and lifecycle meet the requirement, but it is not automatically the business identity the model needs. The [dimension pattern](Dimension%20Patterns/Dimension%20Incremental%20Load.md) describes a persisted mapping that survives ordinary attribute updates.
 
-From there the options are to materialize, which means building gold and rebuilding the semantic model against different table contracts — new relationships, rewritten measures, no backward compatibility — or to push the complexity into Power Query and DAX, which is worse. Both are rewrites, and neither is incremental.
+Key size and cardinality affect the model's cost, but they need measurement. String keys alone do not establish that a small model will perform badly.
 
-Plan to stay small, or plan to rebuild.
+## Transformation cost repeats at refresh
+
+As unions, allocations, and multi-table joins accumulate, the import refresh repeats more work to reconstruct the result. A view can benefit from its underlying engine and indexes; it does not itself preserve a previously calculated result for the next load.
+
+A persisted gold table gives you a place to perform and validate that work once per load, potentially rebuilding only part of the output. That benefit matters when repeated computation becomes the refresh bottleneck or several consumers need the same transformed data.
+
+## Leave a route to persistence
+
+Measure source-query time, refresh duration, and model size as the workload grows. If materializing the result becomes worthwhile, preserving the view's columns and grain can reduce disruption to the semantic model. A change in grain or relationship keys requires a more substantial migration.
+
+This article concerns skipping persisted gold for an import model. DirectQuery and Direct Lake have different query and refresh behavior and remain outside the developed coverage here.

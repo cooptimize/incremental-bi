@@ -4,48 +4,50 @@ layer: silver
 status: working
 related:
   - Silver/Incremental with Hard Delete.md
+  - Silver/Change Tracking Partitions.md
   - Bronze/Full Load.md
 ---
 
-## What this is
+A full silver load replaces the conformed table from a completed bronze input. It is useful for small tables, initial loads, and schema changes that require every row to be transformed again.
 
-Truncate silver and reload entire table from bronze on every run. No change tracking, no assumptions about what changed.
+The load does not need a delta to decide which silver rows to replace. If gold consumes a change tracker, silver must still publish tracker state after the replacement.
 
-## When to use it
+## Replace the table and its state together
 
-- Table is small enough that full reload is faster than tracking changes
-- After schema changes that require clean reload
-- As periodic reconciliation (monthly/quarterly) on top of incremental
-- Change tracking table has become unreliable
-
-## How it works
+This SQL Server-style excerpt assumes bronze exposes the complete current customer population and silver preserves the listed source fields. Apply any required typing and deduplication before publishing that population:
 
 ```sql
-TRUNCATE TABLE silver.Customer;
+TRUNCATE TABLE silver.CustTable;
 
-INSERT INTO silver.Customer (DataAreaId, CustomerId, CustomerName, CustomerGroup, SinkCreatedOn, SinkModifiedOn)
-SELECT DataAreaId, CustomerId, CustomerName, CustomerGroup, SinkCreatedOn, SinkModifiedOn
-FROM bronze.Customer;
-
--- Update change tracker after load
-MERGE INTO silver._ChangeTracker t
-USING (
-  SELECT 
-    'Customer' AS SourceTable,
-    YEAR(SinkCreatedOn) * 100 + MONTH(SinkCreatedOn) AS SinkCreatedMonth,
-    YEAR(SinkCreatedOn) * 10000 + MONTH(SinkCreatedOn) * 100 + DAY(SinkCreatedOn) AS SinkCreatedDay,
-    MAX(SinkModifiedOn) AS MaxSinkModifiedOn,
-    COUNT(*) AS RowCount
-  FROM silver.Customer
-  GROUP BY YEAR(SinkCreatedOn) * 100 + MONTH(SinkCreatedOn),
-           YEAR(SinkCreatedOn) * 10000 + MONTH(SinkCreatedOn) * 100 + DAY(SinkCreatedOn)
-) s
-ON t.SourceTable = s.SourceTable AND t.SinkCreatedMonth = s.SinkCreatedMonth AND t.SinkCreatedDay = s.SinkCreatedDay
-WHEN MATCHED THEN UPDATE SET MaxSinkModifiedOn = s.MaxSinkModifiedOn, RowCount = s.RowCount
-WHEN NOT MATCHED THEN INSERT VALUES (s.SourceTable, s.SinkCreatedMonth, s.SinkCreatedDay, s.MaxSinkModifiedOn, s.RowCount, GETDATE());
+INSERT INTO silver.CustTable
+(
+      DataAreaId
+     ,AccountNum
+     ,CustGroup
+     ,RecId
+     ,Party
+     ,SinkCreatedOn
+     ,SinkModifiedOn
+)
+SELECT
+      ct.DataAreaId     AS [DataAreaId]
+     ,ct.AccountNum     AS [AccountNum]
+     ,ct.CustGroup      AS [CustGroup]
+     ,ct.RecId          AS [RecId]
+     ,ct.Party          AS [Party]
+     ,ct.SinkCreatedOn  AS [SinkCreatedOn]
+     ,ct.SinkModifiedOn AS [SinkModifiedOn]
+FROM bronze.CustTable AS ct;
 ```
 
-## When NOT to use it
+The excerpt shows the replacement, not a complete production procedure. Use a transaction where supported or publish a completed staging table so readers cannot see an empty or partially loaded target. A company-scoped load must replace only that company; truncation applies to the whole table.
 
-- Table is large and load time exceeds SLA
-- You need to track deletions incrementally (use hard-delete incremental instead)
+After loading, refresh the table's [partition tracker](Change%20Tracking%20Partitions.md). Publish the data and tracker as one consistent state. Remove obsolete tracker partitions as well as updating surviving ones, while retaining gold's previously loaded state so it can discover vanished partitions.
+
+## A rebuild can change more than the rows
+
+A changed schema or transformation may alter values without changing source timestamps or counts. Rebuilding silver alone does not guarantee that gold will select those rows again. Coordinate a downstream reconciliation or rebuild for affected targets.
+
+If the load assigns partition keys, preserve their stability or deliberately reset the downstream partition state. Re-deriving an extraction cohort from rewritten source metadata can move rows between partitions. See [partition keys](../Cross-Cutting/Partition%20Keys.md).
+
+Use [incremental with hard delete](Incremental%20with%20Hard%20Delete.md) when a complete replacement no longer fits the window and bronze provides enough information to maintain current state reliably.

@@ -4,107 +4,48 @@ publish: false
 
 # Style guide
 
-## Target audience
+## Write for a colleague
 
-Smart developers who:
-- Know SQL, medallion architecture, have shipped data pipelines
-- Know D365FO (assume CustTable, SalesTable, GL structure without explaining)
-- Don't need ELI5 — want the pattern, code, and gotchas
-- Skeptical of marketing speak and speculation
+Write like an experienced colleague explaining a pattern to another developer. Be direct, natural, and generous with the explanation that makes the idea click. The reader knows SQL, D365FO, and data pipelines; they may not know why this load replaces whole partitions or preserves a particular key.
 
-## Principles
+Keep each article focused on how the pattern works and why it is built that way. Show the main path without explaining every surrounding complexity. Put out-of-scope cases in short bullets under a final “Not covered” heading.
 
-1. **Narrative first, then the code.** One or two sentences saying what this step does, then the snippet that does it. Code confirms an idea the reader already has; it should never be where the idea is introduced.
+## Make each paragraph earn its place
 
-2. **Specific > general.** State the assumption, don't hedge. "This breaks because X" not "Be aware that..."
+Every body paragraph should help explain a step or the reason for it. Cut paragraphs that merely announce the topic, repeat the conclusion, or insist that something is important.
 
-3. **Directional > exhaustive.** "When to use it" is 2-3 bullets max. If it's obvious, skip the section. No inaccurate hedging.
+Prefer a short, connected explanation over a pile of fragments. Use complete sentences and ordinary transitions. Contractions are welcome. Sound like someone helping a colleague understand, without manufacturing personality or adding jokes.
 
-4. **Front-load the pattern.** Tiny preamble (one sentence). Then the pattern. Then hard parts. Context last.
+Give the main idea enough room to land. One concrete example often does more work than several abstract paragraphs. Don't explain it again after the example has made it clear.
 
-5. **Assume D365FO.** Don't explain what a timestamp is or what CustTable does. No "F&O specific notes" if it's just explaining basic concepts.
+For example:
 
-6. **Kill speculation.** No "open questions" or theoretical problems. If we haven't validated it, don't ask.
+> A full load replaces the fact table on every run. If it fits your refresh window, start here: you avoid maintaining change tracking and a separate path for deletions already reflected in the source.
 
-7. **Trim frontmatter.** No "status" field. No "when not to use" if it's just hedging. Just the pattern.
+That gives a recommendation, a condition, and a reason. It doesn't need a second paragraph declaring simplicity valuable.
 
-## Structure (example)
+## Let the subject determine the structure
 
-```markdown
----
-title: [Pattern]
-layer: [bronze | silver | gold]
-related:
-  - [closely related pattern]
----
+Use headings when the subject changes, not every time you have another thought. Use numbered steps for a sequence and bullets or tables for parallel choices. Don't force every article into the same “what / when / how / guardrails” template.
 
-## What this is
+Avoid obligatory introductions, summaries, and key takeaways. End pattern articles with a short “Not covered” list for complexities the example does not implement: retries, unusual source behavior, history, or alternate designs. Give each item a sentence and a link where useful; do not turn the list into another walkthrough. Omit it when there is nothing material to list.
 
-One sentence. What it does.
+Treat length as a symptom. If an article feels long, look for repetition, unnecessary background, or a second topic that deserves its own page. If it feels abrupt, restore the missing connection rather than adding a longer introduction. There is no fixed word, screen, or code-block limit.
 
-## The pattern
+## Show useful code
 
-Small code snippet showing the core idea.
+Explain what a query consumes and produces before showing it. Keep a complete logical operation together; split longer walkthroughs at meaningful steps. Preserve the examples needed to understand the mechanism rather than replacing them with vague prose.
 
-```sql
-MERGE INTO silver.Customer t
-USING bronze.Customer s ON t.id = s.id
-WHEN MATCHED AND s.SinkModifiedOn > @watermark THEN UPDATE ...
-WHEN NOT MATCHED THEN INSERT ...
-WHEN NOT MATCHED BY SOURCE THEN DELETE;
-```
+Follow the external [SQL formatting standard](../coop-standards/SQL/SQL%20Formatting.md) and the applicable SQL standards identified in AGENTS.md. Read them from the shared library without copying or editing them. New and fully rewritten statements use the canonical style; targeted edits preserve established formatting in unrelated code.
 
-**Why:** [One or two sentences on the tradeoff]
+Use real SQL or Python for executable examples. Identify the platform, required inputs, and essential assumptions briefly. Label excerpts rather than presenting them as complete procedures. Put unimplemented transaction, retry, and orchestration details in “Not covered”; include them in the walkthrough only when they are the mechanism being taught.
 
-## How it works
+Use F&O objects where they clarify the pattern, and identify any conformed fields introduced by the example. Temp tables use `#PascalCase`, such as `#PartitionState`.
 
-The mechanics. Name the objects (CustTable, GeneralJournalEntry). Assume reader knows SQL.
+## Preserve meaning and confidence
 
-```sql
--- Full stored procedure example (for reference/AI modeling only)
--- At the bottom if needed
-```
+State essential preconditions briefly so the example remains honest. Reserve “always,” “never,” and “guaranteed” for claims the mechanism supports. Acknowledge other limitations in “Not covered” rather than interrupting each step with an edge-case discussion.
 
-## The hard parts
+Distinguish verified behavior, design assumptions, and unfinished implementation work. Preserve `draft`, `working`, and `stable` metadata; an editorial improvement is not technical validation. Keep specific research gaps visible without adding empty “Open questions” sections. Flag disagreements between articles rather than silently choosing an architecture.
 
-- **Problem 1:** Why it breaks and what to do about it
-- **Problem 2:** How to validate this works in your case
-
-## Related patterns
-
-[Tightly coupled patterns only]
-```
-
-## Length targets
-
-- Patterns: 80-150 lines (including code)
-- Anti-patterns: 40-60 lines
-- No article should require scrolling past 2-3 screens on a laptop
-
-## Language
-
-- Direct: "Do this"
-- No filler: "This is an important consideration" → just state it
-- No marketing: "harness the power of" → delete
-- Specific: "When you add another system" not "In complex scenarios"
-
-## Code
-
-- **Hard cap ~10 lines per block.** Past that, eyes cross and the block gets skipped, which makes it worse than no code at all.
-- A long query is not one block. Break it into the steps it is made of and give each step its own sentence: the source rollup, the comparison predicate, the assembly. Three snippets of eight lines beat one of twenty-four.
-- Don't show the assembly when the parts are clear. "Wrap the rollup as a CTE and it's one statement" beats twenty lines proving it.
-- No full reference procedure at the end. If the article body contains the statements, repeating them as a complete procedure is duplication — name the wrapper in a sentence instead.
-- Use actual F&O objects (CustTable, SalesOrderHeader, LedgerJournalEntry)
-- No pseudocode — real SQL or Python
-- Temp tables are `#PascalCase` (`#PartitionState`), not `@table` variables or `tmp_snake_case`
-- Don't show scaffolding the reader can write themselves (CREATE TABLE for a temp table, procedure shells). Show the statement that carries the idea
-
-## What to remove
-
-- Verbose "What this is" preamble
-- "Status" field (if not stable, don't publish)
-- "When to use it" if it's just hedging
-- "Open questions" if unanswered
-- "Related patterns" if not tightly coupled
-- Any explanation of basic concepts (timestamp, MERGE syntax, etc.)
-- Safety guardrails that sound like warnings ("Be careful...")
+Use bronze, silver, gold, and semantic model consistently. Explain project-specific terms when needed to follow the current article. Describe history behavior directly—“overwrite in place,” “retain each observed version,” or “capture state at period close”—instead of numbered SCD terminology.

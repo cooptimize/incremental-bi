@@ -5,138 +5,73 @@ status: working
 related:
   - Silver/Incremental with Hard Delete.md
   - Silver/Full Load.md
-  - Cross-Cutting/Watermark Strategy.md
+  - Cross-Cutting/Partition Keys.md
+  - Gold/Fact Patterns/Fact Partition Rebuild.md
 ---
 
-## What this is
+A partition tracker summarizes silver so gold can find likely changes without rescanning every source table. It records the maximum modification timestamp and row count for each source partition; gold keeps its own copy of the state it last loaded.
 
-A metadata table that tracks `MAX(SinkModifiedOn)` per source table per `SinkCreatedMonth/SinkCreatedDay` partition. Instead of gold rescanning all source tables to find changes, gold queries one small table to know which partitions changed.
+The maximum identifies many arrivals and updates. The count identifies many removals. Neither is a complete record of changes, so the tracker selects routine work while reconciliation checks the result.
 
-Enables partition-based reloading at gold without expensive change detection queries.
+## Store one row per source partition
 
-## When to use it
-
-- Multiple source tables feed facts; gold must know which partitions to reload
-- Table is large; rescanning to find changes is expensive
-- Partitions are by extraction cohort (SinkCreatedOn YYYYMM or YYYYMMDD)
-
-## The metadata table
+This SQL Server-style example tracks months. Choose days instead when gold needs daily replacement, or roll daily state up explicitly when a consumer needs months:
 
 ```sql
-CREATE TABLE silver._ChangeTracker (
-  SourceTable NVARCHAR(255),
-  SinkCreatedMonth INT,           -- YYYYMM of SinkCreatedOn
-  SinkCreatedDay INT,             -- YYYYMMDD of SinkCreatedOn (optional, for daily granularity)
-  MaxSinkModifiedOn DATETIME,
-  RowCount INT,
-  LastUpdatedDateTime DATETIME DEFAULT GETDATE(),
-  PRIMARY KEY (SourceTable, SinkCreatedMonth, SinkCreatedDay)
+CREATE TABLE silver._ChangeTracker
+(
+      SourceTable NVARCHAR(255) NOT NULL
+     ,SinkCreatedMonth INT NOT NULL
+     ,MaxSinkModifiedOn DATETIME2(7) NULL
+     ,[RowCount] BIGINT NOT NULL
+     ,LastUpdatedDateTime DATETIME2(7) NOT NULL
+     ,PRIMARY KEY (SourceTable, SinkCreatedMonth)
 );
-
-CREATE INDEX idx_ChangeTracker_Modified 
-  ON silver._ChangeTracker(MaxSinkModifiedOn DESC);
 ```
 
-## Populate after loading each source table
+`SinkCreatedMonth` must follow the [stable partition-key contract](../Cross-Cutting/Partition%20Keys.md). The example covers the whole source table across companies. A company-specific tracker needs that scope in both its key and every consumer's comparison.
 
-After loading silver.Customer from bronze:
+## Publish state after the source load
+
+For a simple implementation, replace this table's tracker rows from the completed silver state. The following excerpt assumes `SinkCreatedMonth` is already stored on the conformed transaction table:
 
 ```sql
-MERGE INTO silver._ChangeTracker t
-USING (
-  SELECT 
-    'Customer' AS SourceTable,
-    YEAR(c.SinkCreatedOn) * 100 + MONTH(c.SinkCreatedOn) AS SinkCreatedMonth,
-    YEAR(c.SinkCreatedOn) * 10000 + MONTH(c.SinkCreatedOn) * 100 
-      + DAY(c.SinkCreatedOn) AS SinkCreatedDay,
-    MAX(c.SinkModifiedOn) AS MaxSinkModifiedOn,
-    COUNT(*) AS RowCount
-  FROM silver.Customer c
-  GROUP BY YEAR(c.SinkCreatedOn) * 100 + MONTH(c.SinkCreatedOn),
-           YEAR(c.SinkCreatedOn) * 10000 + MONTH(c.SinkCreatedOn) * 100 
-             + DAY(c.SinkCreatedOn)
-) s
-ON t.SourceTable = s.SourceTable 
-  AND t.SinkCreatedMonth = s.SinkCreatedMonth 
-  AND t.SinkCreatedDay = s.SinkCreatedDay
-WHEN MATCHED THEN
-  UPDATE SET MaxSinkModifiedOn = s.MaxSinkModifiedOn, RowCount = s.RowCount, LastUpdatedDateTime = GETDATE()
-WHEN NOT MATCHED THEN
-  INSERT (SourceTable, SinkCreatedMonth, SinkCreatedDay, MaxSinkModifiedOn, RowCount, LastUpdatedDateTime)
-  VALUES (s.SourceTable, s.SinkCreatedMonth, s.SinkCreatedDay, s.MaxSinkModifiedOn, s.RowCount, GETDATE());
+DELETE ctr
+FROM silver._ChangeTracker AS ctr
+WHERE ctr.SourceTable = 'GeneralJournalAccountEntry';
+
+INSERT INTO silver._ChangeTracker
+(
+      SourceTable
+     ,SinkCreatedMonth
+     ,MaxSinkModifiedOn
+     ,[RowCount]
+     ,LastUpdatedDateTime
+)
+SELECT
+      'GeneralJournalAccountEntry'  AS [SourceTable]
+     ,gjae.SinkCreatedMonth         AS [SinkCreatedMonth]
+     ,MAX(gjae.SinkModifiedOn)      AS [MaxSinkModifiedOn]
+     ,COUNT_BIG(*)                  AS [RowCount]
+     ,SYSUTCDATETIME()              AS [LastUpdatedDateTime]
+FROM silver.GeneralJournalAccountEntry AS gjae
+GROUP BY gjae.SinkCreatedMonth;
 ```
 
-Do this for every source table in the same pipeline run, immediately after load.
+Publish the delete and insert with the silver load as one consistent operation. Gold must not observe the tracker between those statements. This baseline scans the source once to summarize it; an optimized affected-partition update needs the old partition membership of deleted or moved rows too.
 
-## Gold queries the tracker
+Replacing the summary removes partitions that are now empty. Gold still has those partitions in its loaded-state table and can therefore discover their removal. A merge that only updates and inserts tracker rows would leave stale entries for empty partitions.
 
-Find which partitions changed since last gold load:
+## Compare against what gold loaded
 
-```sql
-DECLARE @gold_watermark DATETIME = (SELECT MAX(watermark) FROM gold._LoadWatermark);
+Gold compares current tracker state with `gold._FactLoadState`, rather than asking only for timestamps newer than one global watermark. It needs to consider changed counts, new partitions, and partitions present only in loaded state. See [fact partition rebuild](../Gold/Fact%20Patterns/Fact%20Partition%20Rebuild.md) for the work list.
 
-SELECT DISTINCT SourceTable, SinkCreatedMonth, SinkCreatedDay
-FROM silver._ChangeTracker
-WHERE MaxSinkModifiedOn > @gold_watermark
-ORDER BY SinkCreatedMonth, SinkCreatedDay;
-```
+Don't advance gold's state until the corresponding replacement succeeds. Recording a fresh tracker value against an old fact would hide the remaining work from the next run.
 
-Result: list of `(Customer, 202608, 20260815)`, `(SalesLine, 202608, 20260815)`, etc.
+## Know what the summary misses
 
-Gold then reloads only those partitions.
+A removed row can be offset by an inserted row, leaving the count unchanged. An update can also leave the partition maximum unchanged. Both can pass the routine comparison, which is why [audit and repair](../Gold/Fact%20Audit%20and%20Repair.md) remains separate.
 
-## The hard parts
+A changed source partition also isn't automatically a changed fact partition. Two tables can have different extraction cohorts even when their rows join. The load must translate changes through the relationship, or use a pattern that selects affected keys directly.
 
-### Tracker sync
-
-If source table is updated but tracker is not, gold won't see the change.
-
-**Mitigation:**
-- Update tracker immediately after each source load (same pipeline step)
-- Validate: tracker row counts match actual silver table counts monthly
-- On mismatch, re-run tracker update for that table
-
-### Tracker bloat
-
-Tracker grows one row per (SourceTable, partition_date) combo. Over time:
-- 5 source tables × 365 days × 3 years = ~5,475 rows (small, manageable)
-- Index scan is still fast
-
-**Mitigation:** Archive old partitions periodically. When you delete old data from silver, delete corresponding tracker rows.
-
-### Partition granularity
-
-If you track daily but reload monthly in gold, tracker has orphaned rows (daily partitions that gold never queries).
-
-**Decision:** Match tracker granularity to gold reload granularity. If gold reloads YYYYMM, tracker tracks YYYYMM only (drop SinkCreatedDay column).
-
-### Multi-table coordination
-
-If only SalesLine changes but SalesTable doesn't, tracker shows asymmetric updates.
-
-Gold sees SalesLine partition changed. Does it reload the fact?
-
-**Answer: Yes.** Gold JOIN statement re-processes the fact with (updated SalesLine, current SalesTable). Safe because JOIN is idempotent.
-
-## F&O patterns
-
-By entity, suggested partition key:
-- Sales: `SinkCreatedOn` (order creation month)
-- GL: `SinkCreatedOn` (fiscal month of entry)
-- Inventory: `SinkCreatedOn` (transaction month)
-- Customers/Vendors: `SinkCreatedOn` (reference data, less critical)
-
-Use `SinkCreatedOn` (extraction date), not business date, for partition stability.
-
-## Validation guardrails
-
-1. **Monthly:** Compare tracker row counts vs. actual silver row counts per table
-2. **On schema change:** Reset tracker for affected table (delete rows, repopulate)
-3. **On manual intervention:** Log changes to tracker with reason (for audit)
-4. **On data deletion:** Remove corresponding tracker rows
-
-## Related patterns
-
-- [Incremental with hard delete](Incremental%20with%20Hard%20Delete.md) — Uses this tracker to drive partition reloads
-- [Fact partition rebuild](../Gold/Fact%20Patterns/Fact%20Partition%20Rebuild.md) — consumes the tracker to decide which partitions to reload
-- [Partition keys](../Cross-Cutting/Partition%20Keys.md) — where SinkCreatedMonth comes from and why it is extraction time
+Retain tracker coverage for data that gold still serves. Verify tracker totals against silver after recovery or manual changes, and coordinate related table publication so gold does not combine incompatible source states.

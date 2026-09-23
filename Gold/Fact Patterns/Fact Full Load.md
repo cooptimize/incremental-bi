@@ -6,31 +6,49 @@ related:
   - Cross-Cutting/ForceUpdate Contract.md
 ---
 
-Truncate and reload. The right answer more often than it looks.
+A full load replaces the fact table on every run. If it fits your refresh window, start here: you avoid maintaining incremental state and a separate path for deletions already reflected in silver.
 
-## When
+It also works well when changes are spread across most of the table or the source query combines inputs that are difficult to map back to individual fact rows. Measure how much work an incremental would actually avoid before adding that machinery.
 
-- The fact fits the load window. Most F&O facts that aren't sales, inventory or GL do.
-- Change is diffuse enough that an incremental would reload most of the table anyway. Measure that before assuming otherwise — rows reloaded divided by rows actually changed.
-- The source query is complex enough — unions, `COALESCE` across sources, several tables — that no change signal maps cleanly onto the fact's output rows.
+## Rebuild from the current inputs
 
-Reloading has no delete problem, no watermark, no change tracker, no partition state and nothing to reconcile against. Every incremental pattern here is machinery bought to avoid this one, and the machinery carries a maintenance cost that nightly runtime never shows you.
-
-## The pattern
+The following SQL Server-style excerpt uses conformed budget lines with account, department, date, and amount fields. The unknown key `0` must already exist in both dimensions:
 
 ```sql
 TRUNCATE TABLE gold.FactBudget;
 
-INSERT INTO gold.FactBudget (AccountKey, DepartmentKey, DateKey, Amount)
-SELECT da.AccountKey, dd.DepartmentKey, bl.DateKey, bl.Amount
-FROM silver.BudgetTransactionLine bl
-JOIN gold.DimAccount da ON da.DataAreaId = bl.DataAreaId AND da.MainAccountId = bl.MainAccountId
-JOIN gold.DimDepartment dd ON dd.DepartmentId = bl.DepartmentId;
+INSERT INTO gold.FactBudget
+(
+      AccountKey
+     ,DepartmentKey
+     ,DateKey
+     ,Amount
+)
+SELECT
+      COALESCE(da.AccountKey, 0)    AS [AccountKey]
+     ,COALESCE(dd.DepartmentKey, 0) AS [DepartmentKey]
+     ,btl.DateKey                   AS [DateKey]
+     ,btl.Amount                    AS [Amount]
+FROM silver.BudgetTransactionLine AS btl
+LEFT JOIN gold.DimAccount AS da
+    ON btl.DataAreaId = da.DataAreaId
+    AND btl.MainAccountId = da.MainAccountId
+LEFT JOIN gold.DimDepartment AS dd
+    ON btl.DepartmentId = dd.DepartmentId;
 ```
 
-The procedure still declares `@ForceUpdate INT = 2` and ignores it, so the orchestrator can call every load the same way. See [@ForceUpdate](../../Cross-Cutting/ForceUpdate%20Contract.md).
+Adapt the joins to the actual dimension grain, including company where needed. Each lookup must return at most one member. The left joins keep a line with an unresolved member in the result rather than silently losing its amount.
 
-## The hard parts
+Load dimensions first and record unresolved lookups for repair. On the next full fact load, a now-available dimension member can replace the unknown key.
 
-- **The table is empty while it loads.** Wrap it in a transaction, or build into a staging table and swap, if anything can query gold during the window.
-- **Dimensions must load first.** Every surrogate key is resolved at load time, so a dimension row that doesn't exist yet silently drops the fact row that needed it. Route those to an unknown member instead of letting an inner join eat them.
+## Publish a complete result
+
+The truncate and insert are the replacement body, not a complete procedure. Use a transaction or build into staging and publish the completed result so consumers cannot read the table halfway through. The available publication mechanism depends on the target platform.
+
+The procedure still accepts `@ForceUpdate`; all three modes perform the same full replacement. See the [shared contract](../../Cross-Cutting/ForceUpdate%20Contract.md).
+
+## Keep the reconciliation check
+
+A full load removes the need to detect individual changes in gold. It does not establish that silver is complete or that the query's joins and filters are correct. Compare the loaded result with the expected grain and measures, especially after changing the transformation.
+
+When runtime no longer fits, compare [partition rebuild](Fact%20Partition%20Rebuild.md) for stable transaction values with [open/settled rebuild](Fact%20Open-Settled%20Rebuild.md) for transactions that continue changing.
