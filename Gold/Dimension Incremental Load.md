@@ -52,7 +52,7 @@ The insert leaves out `PKCustomer` so the database assigns it. The load needs on
 | `1` (default) | Reapply every customer's details, keeping their `PKCustomer` values. |
 | `2` | Remove and reload all customers, regenerating their primary keys. |
 
-Until selective updates are implemented, explicitly promote a pipeline request for `0` to `1`. This is a fallback to the full-update strategy, not a selective load. A parameter default alone doesn't override a supplied `0`.
+Until selective updates are implemented, explicitly change a pipeline request for `0` to `1`. This is a fallback to the full-update strategy, not a selective load. A parameter default alone doesn't override a supplied `0`.
 
 Mode `2` clears the dimension and regenerates its primary keys, so dependent facts also need rebuilding. If readers need a complete result throughout the load, [commit the removal and replacement together](Fact%20Full%20Load.md#when-users-read-during-the-load). Place this before the CTE and merge:
 

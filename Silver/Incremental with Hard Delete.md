@@ -7,7 +7,7 @@ related:
   - Bronze/CDC and Change Feed.md
   - Gold/Incremental Fact Considerations.md
 ---
-Silver uses a Copy Data activity to upsert bronze records into the warehouse. We select rows by their modification timestamp, then insert new keys and update existing ones. There's no need to compare every source value with its silver counterpart to decide what changed.
+An incremental silver load uses a Copy Data activity to upsert bronze records into the warehouse. We select rows by their modification timestamp, then insert new keys and update existing ones. There's no need to compare every source value with its silver counterpart to decide what changed.
 
 ## Read from the last watermark, with an hour of overlap
 

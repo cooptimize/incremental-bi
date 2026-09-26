@@ -21,4 +21,3 @@ A small solution can work this way, but it can also become technical debt immedi
 Use this as a deliberate compromise for a constrained solution. If shared joins and calculations start growing, move them into gold load procedures and keep reporting views focused on presentation. Our SQL standards require an explicit exception for business joins and transformations in views.
 
 Before choosing the shortcut for speed, compare it with a simple [fact full load](Fact%20Full%20Load.md) and [dimension merge](Dimension%20Incremental%20Load.md). Development cost may justify the compromise even when it offers no runtime advantage.
-

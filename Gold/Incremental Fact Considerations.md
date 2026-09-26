@@ -72,7 +72,7 @@ Use an upsert when existing rows can change but you can identify which ones need
 
 For example, settling a customer transaction can change its closing date. We can update that date while leaving the other stored values alone.
 
-Calculate `@ReadFrom` once by subtracting `@LookbackMinutes` from the fact's maximum timestamp. This example rereads two hours of source changes and updates matched rows as well as inserting new ones.
+Calculate `@ReadFrom` once by subtracting `@LookbackMinutes` from the fact's maximum timestamp. This example rereads two hours of silver changes and updates matched rows as well as inserting new ones.
 
 The example reads `CustTrans.Closed` into the fact's `ClosedDate` field. [CustTrans field reference](https://learn.microsoft.com/en-us/common-data-model/schema/core/operationscommon/tables/finance/accountsreceivable/transaction/custtrans#closed).
 
@@ -108,7 +108,7 @@ WHEN NOT MATCHED BY TARGET THEN
     VALUES (cc.dataareaid, cc.recid, cc.amountmst, cc.closed, cc.SinkSilverModifiedOn);
 ```
 
-The lookback rereads recent rows; it does not delay processing the newest ones. Store the actual source timestamp in the fact, not the adjusted boundary.
+The lookback rereads recent rows; it does not delay processing the newest ones. Store the row's `SinkSilverModifiedOn` in the fact, not the adjusted read boundary.
 
 Existing rows keep their amount; only the closing date and tracking timestamp are updated. If the purpose of replay is to repair a late relationship, its foreign key or derived fields must be included in the update too. Use the same idea for `VendTrans`, choosing the fields your fact needs to keep current. This example assumes silver records changes to the closing date, including when settlement is undone.
 
@@ -224,7 +224,7 @@ Consider a September 30 close:
 
 The signal is a change to the closing run, not a later closing date. Retain the closing records and state used by the last successful load, then compare them with the current state. New or changed records, reversals, and removed records must identify the transactions to revisit. A silver modification timestamp can help with writes, but can't describe a deleted closing record by itself.
 
-The likely closing table to investigate is `InventClosing`, alongside `InventSettlement`. Its exact status fields and links to the affected transactions still need verification in the configured export. Avoid substituting an invented `IsFullySettled` flag for that work.
+The likely closing table to investigate is `InventClosing`, alongside `InventSettlement`. Its exact status fields and links to the affected transactions still need verification in the configured export.
 
 Once the affected transactions are known, replace their old fact rows with the current result, including rows previously excluded as settled. If that affected set can't be identified reliably, broaden the reload scope. Simply ignoring everything before September 30 would miss the reversal and second close.
 
