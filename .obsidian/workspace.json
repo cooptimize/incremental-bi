@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Silver/Full Load.md",
+                "file": "Overview.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Full Load"
+              "title": "Overview"
             }
           }
         ]
@@ -183,8 +183,8 @@
   },
   "active": "6797c9850dd8886f",
   "lastOpenFiles": [
-    "Silver/Incremental with Hard Delete.md",
     "Silver/Full Load.md",
+    "Silver/Incremental with Hard Delete.md",
     "Snapshots/Snapshots Overview.md",
     "Semantic Model/Power BI Incremental Refresh with Deletions.md",
     "Semantic Model/Full Load.md",

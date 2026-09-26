@@ -11,12 +11,12 @@ How much data do we really need to reload, and how do we know we didn't miss a c
 
 The strategy changes at each layer:
 
-| Where | What we're trying to avoid | What still needs solving |
+| Where | What we're trying to avoid | How the strategy handles changes |
 |---|---|---|
-| Bronze | Extracting the entire source again | Can the source expose every change, including deletions? |
-| Silver | Replacing the whole warehouse copy | Can we apply a batch, retry it safely, and retain confirmed deletions long enough to consume them? |
-| Gold | Recomputing and rewriting the entire result | Which output rows are affected, including changes in joined tables? |
-| Semantic model | Refreshing all imported history | Which stored partitions need another read, including older ones? |
+| Bronze | Extracting the entire source again | Use managed change capture where available, or select changed rows and periods using source signals. |
+| Silver | Replacing the whole warehouse copy | Upsert changed rows and apply deleted keys, or replace the full table when those signals aren't available. |
+| Gold | Recomputing and rewriting the entire result | Preserve dimension keys with a merge; load affected fact rows or replace complete groups according to source behavior. |
+| Semantic model | Refreshing all imported history | Default to full refresh; when incremental refresh is necessary, refresh the periods affected by changes and deletions. |
 
 These choices don't have to match. Incremental silver can feed a full fact load. A gold load can read complete source data but replace only affected periods. Measure the work saved across selection, joins, and writes—not just the number of rows sent to the final statement.
 
@@ -63,9 +63,7 @@ A correct silver load doesn't mean gold selected every affected row, and correct
 
 - [Snapshot choices](Snapshots/Snapshots%20Overview.md): preserve earlier positions or observed versions when the source doesn't already keep the history you need.
 
-## Using and editing this library
-
-Article metadata describes readiness: `draft` means incomplete, `working` needs implementation validation, and `stable` means validated against a real implementation. An unlabelled article makes no validation claim. Examples explain the patterns; they aren't complete production implementations unless stated otherwise.
+## Editing this library
 
 [AGENTS.md](AGENTS.md) holds the writing guide and editing instructions. SQL follows [Cooptimize Standards](https://github.com/cooptimize/coop-standards), read from a sibling `../coop-standards/` checkout rather than copied here.
 
