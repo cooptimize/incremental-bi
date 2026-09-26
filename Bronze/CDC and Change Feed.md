@@ -3,37 +3,20 @@ title: CDC / change feed
 layer: bronze
 status: draft
 related:
-  - Cross-Cutting/Delete Detection Strategies.md
-  - Cross-Cutting/Watermark Strategy.md
   - Silver/Incremental with Hard Delete.md
 ---
+Some database and integration technologies can keep a lake table updated as source records are inserted, changed, or deleted. Instead of copying the entire table on every run, the service captures and applies the changes. CDC—change data capture—is the underlying idea.
 
-A change feed gives bronze insert, update, and delete events instead of requiring a complete extraction on every run. An explicit delete event is particularly useful: it identifies the missing record while its key is still available.
+## Let the platform handle the changes
 
-Use this approach when the source exposes a suitable feed and processing changes saves enough work to justify checkpointing and recovery. A feed can carry changes for a history table as well as a current-state table; what bronze retains determines which downstream uses remain possible.
+For D365FO, Synapse Link and Link to Fabric provide managed paths for bringing source changes into the lake. Once configured, the service handles ongoing synchronization; we don't have to write our own extraction loop for inserts, updates, and deletions. See Microsoft's [F&O export guidance](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-select-fno-data) and [Link to Fabric overview](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-view-in-fabric).
 
-## Start from a known state
+Deletion handling depends on the export format: a deletion may be represented by a flag rather than immediate physical removal. The useful part is that the service carries that change across. Our downstream loads still need to interpret it correctly.
 
-The consumer needs an initial snapshot and a feed position from which to continue. Those two must agree: a gap between the snapshot and the first consumed event can lose changes, while overlap requires safe replay.
+## Without a managed link, there's more to build
 
-After that, each run reads a bounded batch, applies it, and records the checkpoint only after success. Reprocessing a batch should produce the same result. For a current-state target, an older update must not overwrite a newer value simply because it arrived later.
+Other databases and APIs may expose change feeds, but consuming them isn't automatically simple. Someone still has to apply the changes, remember where the last successful load stopped, and handle retries.
 
-The exact sequence field, ordering guarantees, and checkpoint mechanism belong to the source's feed contract. A timestamp alone should not be assumed to provide all three.
+A reliable `ModifiedOn` field can make finding inserted or updated records fairly straightforward. Deletions are harder: once a row is gone, it can't appear in a query for recently modified records. Without deleted keys or a retained deletion flag, we need a separate comparison to find what disappeared.
 
-## Understand the export you're consuming
-
-For F&O, Synapse Link supports create, update, and delete propagation, but a queryable current-state export and incremental change files are different inputs. Microsoft documents deletion metadata and the available export options in [Choose finance and operations data](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/azure-synapse-link-select-fno-data).
-
-Confirm what your configured path exposes before implementing the consumer. A service applying deletes to its own table does not automatically mean your downstream job receives a durable log of every deleted key.
-
-## Plan for replay and gaps
-
-A consumer that falls behind must be able to resume from retained events. If the required events have expired, it needs a new baseline rather than guessing where to restart. Schema changes and reinitialization also need explicit handling so an apparently successful restart doesn't skip part of the data.
-
-Reconciliation remains useful even with a feed. It checks whether the consumer applied what the source delivered and whether downstream transformations preserved the intended result.
-
-## Still to validate
-
-This draft does not yet provide a tested F&O consumer. It needs the selected export mode, event schema, ordering and retention guarantees, bootstrap sequence, and behavior during a link reset. Entity support also needs checking against the actual environment.
-
-See [silver incremental with hard delete](../Silver/Incremental%20with%20Hard%20Delete.md) for the current-state destination and [full history snapshots](../Snapshots/Full%20History%20Snapshot.md) for retaining observed versions.
+That's why a managed link is valuable when available, and why a [full load](Full%20Load.md) is often preferable to building our own incremental extraction. [Timestamp-based loading](Partition-Based%20Incremental.md) is another option when the source provides reliable dates.

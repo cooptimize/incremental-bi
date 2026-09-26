@@ -3,100 +3,42 @@ title: Incremental with hard delete
 layer: silver
 status: working
 related:
-  - Cross-Cutting/Watermark Strategy.md
-  - Cross-Cutting/Delete Detection Strategies.md
-  - Silver/Change Tracking Partitions.md
   - Silver/Full Load.md
+  - Bronze/CDC and Change Feed.md
+  - Gold/Incremental Fact Considerations.md
 ---
+Silver uses a Copy Data activity to upsert bronze records into the warehouse. We select rows by their modification timestamp, then insert new keys and update existing ones. There's no need to compare every source value with its silver counterpart to decide what changed.
 
-This pattern keeps silver as current state: update changed records, insert new ones, and physically remove confirmed deletions. Consumers can query the table without adding a deletion filter to every join.
+## Read from the last watermark, with an hour of overlap
 
-The tradeoff is that a removed row no longer carries its own change signal. Silver must publish enough information for gold to remove or rebuild the affected output. A partition tracker helps, but a maximum timestamp by itself cannot describe every deletion.
+Keep the last successful watermark for each table. At the start of the next run, capture a new UTC watermark and calculate the read boundary once:
 
-## Establish what bronze contains
+| Pipeline value | Meaning |
+|---|---|
+| `LastWatermark` | The previous successful run's watermark. |
+| `ReadFrom` | `LastWatermark` minus one hour. |
+| `RunWatermark` | The current run's UTC timestamp, captured before copying. |
 
-There are two different inputs:
+Select bronze rows whose `SinkModifiedOn` is at or after `ReadFrom` and before `RunWatermark`. Copy Data upserts those rows using the source key. The overlap gives delayed records another chance to arrive; rereading a row simply updates its existing silver record. It doesn't guarantee that every delay fits within an hour.
 
-- A complete current-state population lets silver infer deletion from absence.
-- A change batch requires explicit deleted keys or retained deletion flags. Absence from that batch means nothing about whether a record still exists.
+On the first run, omit the lower boundary and use the same upsert to populate the table. This initializes the incremental pattern; use a [full replacement copy](Full%20Load.md) instead when the source lacks reliable change or deletion signals.
 
-The example below uses the first contract. `bronze.CustTable` is already a completed, deduplicated current-state table. If your export retains deletion markers, normalize those before using this example; do not point it directly at a raw event batch.
+Save `RunWatermark` as the next `LastWatermark` only after the upsert and deletion steps succeed. If either fails, keep the previous watermark so the next run retries that window. Run gold after the required silver loads finish.
 
-## Merge the company being loaded
+## Copy recently deleted keys separately
 
-This SQL Server-style example compares each customer's timestamp with its stored silver timestamp. It preserves the source keys and fields needed by the dimension load:
+The deletion query reads keys marked deleted within the same window, using the export's deletion or modification timestamp. Exclude those records from the live-row upsert, copy their keys, and remove the matching silver rows. This relies on bronze retaining a deletion signal long enough for the load to read it.
 
-```sql
-WITH
-     CompanyCustomers AS
-     (
-         SELECT
-               ct.DataAreaId
-              ,ct.AccountNum
-              ,ct.CustGroup
-              ,ct.RecId
-              ,ct.Party
-              ,ct.SinkCreatedOn
-              ,ct.SinkModifiedOn
-         FROM bronze.CustTable AS ct
-         WHERE ct.DataAreaId = @DataAreaId
-     )
-MERGE INTO silver.CustTable AS tgt
-USING CompanyCustomers AS src
-    ON tgt.DataAreaId = src.DataAreaId
-    AND tgt.AccountNum = src.AccountNum
-WHEN MATCHED AND
-(
-       @ForceUpdate = 1
-    OR tgt.SinkModifiedOn IS NULL
-    OR src.SinkModifiedOn IS NULL
-    OR tgt.SinkModifiedOn < src.SinkModifiedOn
-) THEN UPDATE SET
-      tgt.CustGroup = src.CustGroup
-     ,tgt.RecId = src.RecId
-     ,tgt.Party = src.Party
-     ,tgt.SinkModifiedOn = src.SinkModifiedOn
-WHEN NOT MATCHED BY TARGET THEN
-    INSERT
-    (
-          DataAreaId
-         ,AccountNum
-         ,CustGroup
-         ,RecId
-         ,Party
-         ,SinkCreatedOn
-         ,SinkModifiedOn
-    )
-    VALUES
-    (
-          src.DataAreaId
-         ,src.AccountNum
-         ,src.CustGroup
-         ,src.RecId
-         ,src.Party
-         ,src.SinkCreatedOn
-         ,src.SinkModifiedOn
-    )
-WHEN NOT MATCHED BY SOURCE AND tgt.DataAreaId = @DataAreaId THEN
-    DELETE;
-```
+Copy Data's ordinary upsert doesn't delete target rows. The deletion copy needs a sink procedure or a staging table followed by a delete statement to apply those keys. The exact wiring depends on the destination connector; see Microsoft's [SQL Server Copy Data options](https://learn.microsoft.com/en-us/azure/data-factory/connector-sql-server).
 
-Keep the source complete for the company. Filtering it by watermark would cause the deletion clause to remove unchanged rows. The target-side company condition prevents the same clause from deleting every other company's customers.
+We don't compare complete tables to look for missing keys in this pattern. If the export simply removes rows without retaining deleted keys, this deletion query isn't available; use a [full load](Full%20Load.md) to carry those removals into silver.
 
-This is the merge body, not the whole procedure. Validate `@ForceUpdate` before running it; mode `2` uses the [full-load path](Full%20Load.md) for the requested scope. Commit the target changes and tracker state together, or prevent gold from reading until both are published.
+## SinkSilverModifiedOn
 
-## Tell gold what changed
+Pass `RunWatermark` into the copy and map it to `SinkSilverModifiedOn` for every inserted or updated row. Use the current run's timestamp—not the previous watermark, the one-hour lookback boundary, or the source row's `SinkModifiedOn`. Rows outside the copied batch keep their existing value.
 
-Refresh [change tracking partitions](Change%20Tracking%20Partitions.md) after the merge. The tracker records both maximum timestamps and counts. Gold compares those values with the state used for its previous load, including partitions that have disappeared entirely.
+This gives gold a signal that silver processed the row. A source change dated 09:00 might not reach silver until the 10:00 run. Keeping 09:00 as `SinkModifiedOn` and stamping 10:00 as `SinkSilverModifiedOn` lets gold pick up that newly available row. Repairs and replayed rows also receive the current run's timestamp, even if their business values haven't changed.
 
-A deletion does not necessarily advance the maximum timestamp of the surviving rows. Counts catch many such changes, but a delete and insert can offset each other. Periodic reconciliation is still required for gaps in the signal.
+A table default alone won't do this: in SQL Server/Azure SQL, a default can populate an insert but doesn't automatically refresh the column on updates. Passing the pipeline value makes the timestamp explicit for both sides of the upsert. See Microsoft's [column-default behavior](https://learn.microsoft.com/en-us/sql/relational-databases/tables/specify-default-values-for-columns).
 
-If only one source table in a fact changes, gold must map that change to the affected fact keys or partitions. The extraction month of a header or lookup row is not automatically the extraction month of its dependent transactions.
-
-## Keep recovery and history explicit
-
-Hard deletion is suitable for a current-state table, not a substitute for a retention policy. Recovery requires retained inputs, snapshots, or backups. A bronze table that also represents only current state cannot reconstruct a deleted historical row.
-
-Deleting a customer from silver also does not decide what gold should do with its historical dimension member. Preserve referenced keys or coordinate fact recovery according to the reporting requirement. See [dimension incremental load](../Gold/Dimension%20Patterns/Dimension%20Incremental%20Load.md).
-
-Schema changes and changed transformations need a deliberate reload and downstream reconciliation. Resetting a tracker without changing the values gold compares will not, by itself, force gold to rebuild.
+Define the field through Schema Manager and include it in the copy mapping. For gold results built from several silver tables, their timestamps may need combining into `SinkMaxSilverModifiedOn`. [Incremental fact loads](../Gold/Incremental%20Fact%20Considerations.md) still need to account for related tables arriving at different times and for deleted rows, which cannot carry a new timestamp downstream.

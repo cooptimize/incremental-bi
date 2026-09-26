@@ -2,30 +2,23 @@
 title: No-load direct semantic
 layer: gold
 related:
-  - Gold/Dimension Patterns/Dimension Incremental Load.md
-  - Gold/Fact Patterns/Fact Partition Rebuild.md
+  - Gold/Dimension Incremental Load.md
+  - Gold/Incremental Fact Considerations.md
+  - Gold/Fact Full Load.md
 ---
+Skipping persisted gold tables is cheaper to develop: there are fewer tables, load procedures, and pipeline steps to build. That's a real reason companies do it.
 
-When the source tables already look close to what a report needs, skipping a persisted gold layer can seem attractive. Power BI reads the data directly, and there is one less load to maintain.
+We rarely recommend it. Consider it mainly when a company has one data source, low data volumes, and no practical budget or capacity to build and maintain a fuller warehouse. The report reads the available source or silver data without a separate gold load.
 
-This is an alternative to the standard gold design, not the default for this library. The SQL standards put business joins and calculations in stored procedures and keep reporting views focused on presentation.
+## What the shortcut costs
 
-## What the gold layer provides
+Gold gives reports stable dimension keys and prepared business results. Without it, the direct design still has to provide reliable relationships, consistent calculations, and acceptable performance. Those responsibilities don't disappear with the load procedure.
 
-A customer dimension keeps the same `PKCustomer` associated with its `dataareaid` and `customerid`. Facts store that reference as `FKCustomer`. A source record number or a fresh row number generated during refresh is not automatically a substitute for that persistent association.
+A small solution can work this way, but it can also become technical debt immediately. Adding another source or several reports may mean untangling logic that was built for one model before it can be reused.
 
-Gold also prepares shared business results before reports read them. When several reports need the same joins or calculations, the stored procedure is where that work is performed and checked.
+## Keep the scope small
 
-The reporting view then selects the prepared columns. Under the standards, shared views use `common`, while a model-specific view uses its model's schema, such as `sales.Customer`. Joins and other business transformations in those views require an explicit exception.
+Use this as a deliberate compromise for a constrained solution. If shared joins and calculations start growing, move them into gold load procedures and keep reporting views focused on presentation. Our SQL standards require an explicit exception for business joins and transformations in views.
 
-## When to reconsider the extra load
+Before choosing the shortcut for speed, compare it with a simple [fact full load](Fact%20Full%20Load.md) and [dimension merge](Dimension%20Incremental%20Load.md). Development cost may justify the compromise even when it offers no runtime advantage.
 
-If the source already supplies the required shape, stable keys, and acceptable query performance, a direct approach may avoid unnecessary copying. Measure the actual refresh work before deciding that persistence is needed for speed alone.
-
-If the direct approach starts accumulating business joins and calculations, move that work into the gold procedure and publish a simple view over the result. Keeping the reporting columns consistent can reduce the impact on the semantic model.
-
-## Not covered
-
-- **Exceptions to the view standards:** any required joins or transformations need an explicit decision and a comment explaining the exception.
-- **Measured performance:** this article provides no benchmark for deciding when persistence pays for itself.
-- **DirectQuery and Direct Lake:** their query and refresh behavior needs separate treatment.

@@ -3,34 +3,33 @@ title: Snapshots — overview
 layer: snapshots
 status: draft
 related:
-  - Snapshots/Period Snapshot.md
-  - Snapshots/Full History Snapshot.md
-  - Cross-Cutting/Delete Detection Strategies.md
 ---
+Sometimes the report needs an answer the current data can no longer provide: what was our inventory at month end, or who was assigned to a project before its manager changed? Keeping only the latest values loses those answers.
 
-A snapshot preserves a state that later source changes would otherwise overwrite. Use one when a report needs to answer a historical question that current data cannot answer, such as the inventory position reported at month end.
+Before capturing more data, check whether the source already keeps the history you need. If it does, use that history. Otherwise, decide whether the report needs a position at regular intervals or a record of changes as we observe them.
 
-The first step is to check whether the source already retains the required history. F&O has date-effective data for areas such as exchange rates and worker assignments. If that history answers the question, load it rather than reconstructing it from periodic observations. Also check that your extraction exposes the historical rows you need.
+# Capture a position at an interval
 
-## Be precise about the historical question
+A daily inventory or month-end aging snapshot stores the result alongside the date it represents. For an inventory report, that might mean one row per company, item, and warehouse each day. Store the detail the report needs rather than copying every source field.
 
-“What rate applied on this date?” and “What rate did the report show that day?” may have different answers after a backdated correction. The first asks for business-effective history. The second asks for what the pipeline observed at the time.
+If the same capture runs twice, replace or recognize the existing snapshot so a retry doesn't double the reported balance. Be clear about the date it represents: a month-end job running after midnight may still be capturing the previous month's position.
 
-That distinction determines which dates to retain and whether a later correction should change a prior result. It also prevents a current-state copy with a timestamp from being mistaken for a complete audit trail.
+## What should happen when last month is corrected?
 
-## Choose the capture interval
+Suppose a correction changes March after you've saved its snapshot. Should the report show March as originally reported, March with the correction, or both? That reporting choice determines whether to keep, replace, or version the snapshot.
 
-| Approach | What it preserves | Typical use |
-|---|---|---|
-| [Period snapshot](Period%20Snapshot.md) | State captured at scheduled intervals | Daily inventory, period-end balances, AR aging |
-| [Full history snapshot](Full%20History%20Snapshot.md) | Each version the pipeline observes | Attribute history and investigation of changes between periods |
+A transaction deleted today can still belong in an earlier snapshot if the purpose is to preserve what was reported then.
 
-A period snapshot cannot show a change that happened and reversed between captures. A history table can preserve that change only if the pipeline receives both versions. Neither approach recreates events the source never exposed.
+# Retain observed versions
 
-## Decide what to retain
+If the report needs to follow changes between snapshot dates, keep a new version when the load notices a relevant change. For example, when a project's manager changes, end the previous version's date range and start a new version with the new manager. Keep the record key so the versions can be connected, and save both changes together.
 
-Capture the grain and attributes required by the historical question. Copying every table every day adds storage and query work without necessarily preserving useful business history. For a period-end balance, a position by account and company may be the required result; for an attribute investigation, individual record versions may matter.
+## When it changed and when we noticed may differ
 
-Define retention, correction, and deletion behavior before consumers depend on the table. A source deletion may end the current version while earlier observations remain, but the required behavior depends on what the history is meant to represent.
+A manager correction received today might apply from the start of last month. Recording today's load time tells us when we saw it, not when it took effect. Use the source's effective dates and history when they answer the reporting question; don't treat observation time as the business date.
 
-The snapshot articles are drafts. They still need tested load examples and an explicit treatment of late data, corrections, and source-provided history.
+A daily read also can't see every change made during the day. If a value changes twice and returns to its original value before the next read, both changes are invisible. A reliable event feed can provide more detail, but saving versions can't recover changes the input never supplied.
+
+# Keep the history the report needs
+
+Copying ten million rows every day adds about 3.65 billion rows a year. Choose how often to capture, what detail to retain, and how long to keep it based on the report's needs. Saving only changed versions may use less space, but adds change detection and date-range logic to the queries.

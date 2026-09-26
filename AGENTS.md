@@ -1,55 +1,68 @@
 ---
 publish: false
 ---
+# Editing ERP Analytics Incrementals
 
-# Instructions for Editing ERP Analytics Incrementals
+The articles are the product: a practical guide to ERP load decisions, illustrated with D365FO. Read [Overview.md](Overview.md) for orientation and article navigation. This file contains both agent instructions and the writing guide.
 
-This repository is a practitioner's reference for ERP analytics load patterns, focused on Dynamics 365 Finance & Operations and bronze/silver/gold pipelines feeding Power BI. The articles are the product. Read [README.md](README.md) for the repository map and [STYLE.md](STYLE.md) for writing guidance.
+## Follow the wiki's flow
 
-## Editing articles
+- Overview is the single introduction and navigation page. Explain what work an incremental strategy saves and why the strategy differs by layer; skip warehouse-layer definitions. Do not recreate README, Pattern Index, or Cross-Cutting sections.
+- Bronze explains the extraction choice: copy everything, use managed change capture, or select changes by source dates. Lead with what the platform handles; don't turn a managed-link article into instructions for building a feed consumer.
+- Silver explains Copy Data: full replacement when signals are unreliable, or watermark-based upserts with a separate deleted-key step when signals are available.
+- Gold separates preserving dimension primary keys from choosing how to reload facts. Fact strategies are options determined by source behavior, not one universal incremental recipe.
+- Semantic-model articles make full refresh the default and explain why keeping older imported data correct makes incremental refresh difficult for ERP reporting.
+- Snapshots address a separate need: keeping earlier information. Check source history before proposing another capture process.
+- Link to the article that owns an explanation instead of repeating it. Keep Gold flat and retain human-readable filenames.
 
-- Explain the problem, the mechanism, and the assumptions behind a pattern. Assume working knowledge of SQL and F&O, but do not assume the reader participated in the design discussion.
-- Follow STYLE.md. Keep the article body focused on how the pattern works and why. State essential assumptions briefly, preserve useful code, and move unimplemented complexities to short bullets in a final “Not covered” section. Do not explain every edge case in the walkthrough.
-- Preserve the author's meaning. Distinguish prose improvements from technical changes, and flag conflicting claims rather than silently choosing between them.
-- Ground examples in the project's F&O stack. State platform-specific assumptions and distinguish verified behavior from proposed approaches.
-- Keep gaps visible. Do not invent implementation details, benchmarks, or validation evidence to make an unfinished article appear complete.
-- Describe history behavior directly, such as “overwrite in place,” “retain each observed version,” or “capture state at period close.” Do not use numbered SCD terminology.
-- Before designing a snapshot or history-tracking pattern, check whether the source already maintains the required date-effective history. See [Snapshots overview](Snapshots/Snapshots%20Overview.md).
+## Write for a colleague
 
-## Keep examples simple
+- Answer why an approach could help, how it works, and what could make it miss a change. Lead with the general behavior and benefit; introduce D365FO tables afterward as supporting examples.
+- Assume basic SQL and warehouse knowledge, but no in-depth experience managing incremental loads. Explain the connection between ideas in ordinary sentences. Be concise without becoming clipped, cryptic, or impersonal.
+- Explain the action before naming the concept: saving where the last successful load stopped introduces a checkpoint. Don't substitute phrases such as ‘publish a bounded batch’ or ‘establish a baseline’ for explaining what the load actually does. Use a short example when it makes the mechanism clearer.
+- Brevity means removing material the reader does not need, not compressing the remaining explanation into jargon. Use connected, natural sentences. A short article may need only a few paragraphs; do not add headings, examples, or closing sections to fill a template.
+- Cut repeated explanations, generic warnings, throat-clearing, and obligatory summaries. Keep enough detail to explain how the pattern works and why someone would choose it. There is no fixed word limit.
+- For example: “A full load replaces the fact on every run. If it fits the refresh window, you avoid maintaining change detection and a separate path for deletions.” That's enough; don't follow it with another paragraph praising simplicity.
+- Use concept-based headings, not table names or business entities. In the fact considerations article, loading approaches are H1s and potential gotchas are H2s. Don't force that hierarchy onto every short article.
+- Include a caveat only when it changes how the reader chooses, understands, or applies the pattern. Explain it beside the relevant step. Omit generic warnings, implementation wish lists, and catalogues of excluded topics; do not append “Not covered” sections. Keep material assumptions and actual implementation gaps visible without repeating them across the library.
+- Keep topics in their layer. For example, semantic-model refresh belongs in its own article, not a tangent in the fact-loading walkthrough.
+- Resolve `@agent` notes and obvious misspellings such as `@agnet` when asked to review comments. Preserve the user's other edits.
 
-- Use the simplest code that demonstrates how the pattern works and why. Include only the structure needed for that example.
-- Prefer a direct query for a simple join. Do not wrap a table in a pass-through CTE or add intermediate steps just to make the example look structured.
-- Add CTEs, temporary tables, and helper expressions when they perform useful work or their result is reused. Do not add them merely to illustrate every available SQL convention.
-- For a simple example, keep its scope filter in the direct query rather than adding a CTE solely to hold the predicate. This is a project-specific exception to the external pre-join filtering convention.
-- Keep essential logic, including the combined source timestamp and matching scope. Put unimplemented production concerns in “Not covered” instead of expanding the example with scaffolding.
+## Keep examples useful and simple
 
-## SQL naming
+- Show the smallest real SQL example that explains the mechanism. State its platform, required inputs, and essential assumptions. Label fragments and prepared fields; don't present invented helper flags as native ERP fields.
+- Prefer direct joins. Add CTEs, temporary tables, and helper expressions only for useful transformations or reuse, not for ceremony.
+- A simple scope filter can stay in the direct query; this is an exception to the external pre-join filtering default. Do not introduce `@DataAreaId` parameters or company-scoped loads unless requested.
+- Retain useful code when shortening prose. Avoid alternative implementations that obscure the default. Include transaction or recovery detail only when it affects the example being taught; routine pipeline plumbing is not the point of every article.
+- Use `dim.Customer`, primary key `PKCustomer`, and matching fields `dataareaid` plus `customerid`. Use `FKCustomer` on facts. Use source-system schemas such as `d365fo.custtable`; never `dbo`.
+- Explain “primary key” through the actual reference rather than casually saying “ID.” Describe historical behavior directly, without numbered SCD terminology.
 
-- Use `dim.Customer` for the customer dimension and `PKCustomer` for its primary key. Match it to the natural/business key `dataareaid` plus `customerid`.
-- Use source-system schemas for source tables, such as `d365fo.custtable` and `d365fo.dirpartytable`.
-- Never use the `dbo` schema in SQL examples. Follow the external standards for identity generation and supporting-object placement.
+## Preserve the agreed design
 
-## External SQL standards
+- Dimensions use a complete-source `MERGE` from the start. `@ForceUpdate = 0` means selective updates to changed members; `1` means a full update of matched members and is our default strategy. Until selective updates are implemented, explicitly promote incoming `0` to `1` as a fallback; do not describe the modes as synonymous. Selective updates using `SinkSilverModifiedOn` must justify their complexity with measured benefit.
+- Fact full-load procedures set `@ForceUpdate = 2` internally, retaining the shared interface while overriding the caller's value.
+- Present incremental facts as choices to test against ERP behavior. Separate finding work from writing it. Don't assume a posting is immutable or a closed transaction can never change without evidence for the actual source and processes.
+- Gold merge examples send selected changed rows, without absence-based deletes. Complete-source comparisons or complete affected groups are needed to infer deletions unless deleted keys are available. Related tables can arrive at different times; a required join prevents incomplete output but does not arrange a retry.
+- Data checks validate the design; regular rebuilding isn't a substitute for fixing known selection bugs. Keep counts, timestamps, and hashes' limits clear without expanding every article into a failure catalogue.
+- Silver incremental loads use Copy Data upserts selected from the last successful watermark minus one hour, with a separate copy of recently deleted keys applied through the destination deletion step. Calculate the read boundary once before filtering; do not put the lookback arithmetic in the source predicate. The first incremental run uses the same upsert without a lower boundary. When reliable change or deletion signals are unavailable, use a full replacement through Copy Data. Do not introduce record-by-record value comparison into the timestamp-based upsert.
+- Save each silver table's new watermark only after both upserts and deletions succeed. Plain Copy Data upsert does not remove target rows; describe the destination deletion operation explicitly.
+- Map the current pipeline run's UTC watermark to `SinkSilverModifiedOn` on both inserts and updates. It identifies the silver processing run, not the original export or exact commit time. Do not use the prior watermark or adjusted read boundary, rely on a table default to stamp updates, or imply that the timestamp guarantees freshness across joined tables.
+- Full refresh is the default for imported Power BI models. Present incremental refresh as an exception when full refresh cannot meet requirements, with explicit attention to old ERP corrections and deletions.
+- The no-load approach is a rarely recommended development-cost compromise for small, single-source setups without a practical path to a fuller warehouse.
+- Before proposing snapshots, check whether the source already retains the history required by the report.
 
-- SQL examples follow the SQL standards in the sibling repository `../coop-standards/`. Read its [README](../coop-standards/README.md) to locate the current SQL and applicable technology articles, then read the articles relevant to the objects being edited. Include formatting, table, procedure, view, and target-platform rules as applicable.
-- Read [SQL Formatting.md](../coop-standards/SQL/SQL%20Formatting.md) for every SQL editing task. New and fully rewritten statements use its canonical style; targeted edits preserve established formatting in unrelated code.
-- Keep the standards external. Do not copy, assemble, or synchronize their contents into this repository. Do not edit files in `coop-standards` as part of work here.
-- This reference adopts SQL standards, not the other repository's agent instructions or prose style. STYLE.md governs these explanatory articles. Explicit user instructions and this project's stated overrides take precedence.
-- Keep standards changes separate from algorithm changes. If applying a standard would change a pattern's behavior, identify the conflict rather than silently redesigning the pattern.
-- The shared repository is [Cooptimize Standards](https://github.com/cooptimize/coop-standards). Other machines should have an accessible checkout beside this repository. If it is unavailable, report that the standards could not be read; do not claim compliance from memory.
+## Read external standards
 
-## Organization
+- Use the sibling [coop-standards README](../coop-standards/README.md) to find applicable SQL and technology rules. For SQL edits, read [SQL Conventions](../coop-standards/SQL/SQL%20Conventions.md), [SQL Layout](../coop-standards/SQL/SQL%20Layout.md), and the relevant table, procedure, view, or platform articles.
+- Keep standards external. Never copy or synchronize them into this project, and don't edit `coop-standards` here. If the checkout is unavailable, say so rather than claiming compliance from memory.
+- Adopt its SQL standards, not its agent instructions or prose style. User instructions and this project's explicit exceptions take precedence. Apply current rules to new statements; preserve unrelated formatting during targeted edits.
+- Schema Manager owns generated silver structures and behavior. Change those through its approved source/configuration, not handwritten replacements inferred from examples.
 
-- Keep each pattern in its own Markdown file under the appropriate layer or topic folder. Link related patterns where their choices interact.
-- Use the existing human-readable filenames and actual directory capitalization. When adding, moving, or renaming an article, update [Pattern Index.md](Pattern%20Index.md) and affected links and frontmatter references.
-- Keep README.md focused on human orientation and navigation, Overview.md on the architectural explanation, and STYLE.md on writing guidance. Maintain agent instructions here rather than in a separate tool-specific instruction file.
-- Preserve article metadata. The status convention is `draft` for incomplete content, `working` for content that still needs implementation validation, and `stable` for patterns validated against real implementations. Do not promote status solely because the writing improved; a missing status is not evidence of validation.
-- Keep repository guidance marked `publish: false`. Preserve the existing publishing configuration unless the task concerns publishing.
+## Organize and verify
 
-## Validation
-
-- Check edited Markdown for balanced code fences, valid local links, and whitespace errors.
-- Review related articles for conflicting terminology, assumptions, and examples. Report unresolved technical contradictions separately from completed editorial changes.
-- For code changes, use validation appropriate to the target platform. Clearly state when examples have not been executed; Markdown checks do not validate SQL or DAX behavior.
-- Preserve unrelated working changes. Summarize what changed, what was checked, and any remaining gaps.
+- Writing and agent guidance live in this file; do not create a second style guide. Update these instructions when an agreed decision changes, replacing stale rules rather than appending contradictory ones.
+- Consolidate articles that repeat the same decision. Preserve unique examples, assumptions, and unresolved gaps. Update Overview navigation, links, anchors, and frontmatter when moving or removing pages.
+- Start the article body immediately after the closing metadata delimiter, without an extra blank line or decorative separator. Preserve normal paragraph spacing within the body.
+- Preserve metadata and publishing configuration. Guidance stays `publish: false`. `draft` means incomplete, `working` means implementation validation is pending, and `stable` requires actual validation. Missing status isn't evidence of readiness.
+- Distinguish editorial changes from algorithm changes. Don't invent source behavior, schema, benchmarks, or successful tests. Flag unresolved contradictions rather than silently picking an interpretation.
+- Check Markdown links, anchors, fences, and whitespace. Use appropriate checks for changed code, and state when SQL hasn't been executed on its target platform. Preserve unrelated working changes.

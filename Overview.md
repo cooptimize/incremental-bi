@@ -1,45 +1,72 @@
 ---
 title: Overview
 ---
-
 # ERP Analytics Incrementals
 
-Incremental loading reduces repeated work by processing the data that needs attention. In an ERP pipeline, identifying that data is often harder than loading it: a row can disappear, a related table can change, or a correction can arrive in a period the load no longer reads.
+How much data do we really need to reload, and how do we know we didn't miss a change? This library works through those decisions using D365FO examples. The examples illustrate the choices; they aren't prescriptions for every ERP table.
 
-This project explains patterns for those cases, using Dynamics 365 Finance & Operations and a bronze/silver/gold pipeline feeding an imported Power BI semantic model. Each article describes an approach, the assumptions it needs, and the work it leaves for downstream loads or reconciliation.
+## What do we mean by incremental?
 
-## Each layer has a different job
+“Incremental” says we're doing less work than a full load. It doesn't say which work we're skipping—or how we know the skipped data is still correct. That's why calling a pipeline incremental can hide more than it explains.
 
-**Bronze extracts the source.** Its options depend on what the source exposes: a complete population, timestamp-filtered rows, date slices, or a change feed. If a deletion is invisible here, downstream transformations cannot recover it from the incoming rows alone.
+The strategy changes at each layer:
 
-**Silver maintains usable, conformed data.** It handles source types, keys, duplicates, and the representation of deleted records. A current-state table can remove rows, while a history requirement needs a different retention design.
+| Where | What we're trying to avoid | What still needs solving |
+|---|---|---|
+| Bronze | Extracting the entire source again | Can the source expose every change, including deletions? |
+| Silver | Replacing the whole warehouse copy | Can we apply a batch, retry it safely, and retain confirmed deletions long enough to consume them? |
+| Gold | Recomputing and rewriting the entire result | Which output rows are affected, including changes in joined tables? |
+| Semantic model | Refreshing all imported history | Which stored partitions need another read, including older ones? |
 
-**Gold builds the reporting model.** Facts and dimensions combine silver inputs, resolve surrogate keys, and expose business-facing names and grain. A changed source row must be mapped to the output rows or partitions that need recomputing.
+These choices don't have to match. Incremental silver can feed a full fact load. A gold load can read complete source data but replace only affected periods. Measure the work saved across selection, joins, and writes—not just the number of rows sent to the final statement.
 
-**The semantic model serves the reports.** It adds measures, relationships, security, and its own refresh lifecycle. Updating gold does not automatically update an imported copy of an old partition.
+## Choose by what can change
 
-For example, removing an old transaction from silver fixes silver's current state. Gold must still replace the affected result, and Power BI must reread it before the report reflects the deletion.
+If loaded values never change, inserting missing rows may be enough. If they change, the load needs a way to select and update them. If records disappear, a modified timestamp can't return them: use deleted keys or compare a complete population, possibly within affected partitions.
 
-## Choose the pattern from the data's behavior
+Related data matters too. A transaction can stay unchanged while its reported manager or settlement details change. The [fact considerations](Gold/Incremental%20Fact%20Considerations.md) work through these choices and their tradeoffs.
 
-Three questions help narrow the choice:
+The [dimension merge](Gold/Dimension%20Incremental%20Load.md) solves a different problem: keeping the primary keys that facts reference. Its default reads the complete source and updates every match. Preserving keys doesn't require selective updates.
 
-- **How are deletions discovered?** An event, a retained flag, and a complete key comparison provide different coverage and costs.
-- **How long can records change?** An old inventory transaction may still be open. A date window and an open/settled split select different work.
-- **How do input changes affect output?** One-to-one loads can often replace by key. Joins and aggregates need a mapping from changed inputs to affected results.
+Start with a [full fact load](Gold/Fact%20Full%20Load.md) if it fits the window. Add selection where the saving justifies maintaining it.
 
-Then measure whether a full load fits the window. If it does, incremental state and recovery logic may cost more to maintain than the repeated work they save. If it doesn't, select the smallest reliable unit of replacement for the actual workload.
+## A change has to reach the report
 
-## Reconciliation checks what the change signal misses
+A correct silver load doesn't mean gold selected every affected row, and correcting gold doesn't refresh an older imported partition. Check each handoff. When something is missing, find the first layer where it diverges rather than assuming the whole pipeline shares one watermark or reload rule.
 
-An incremental job can succeed while producing an incomplete result. A late dimension member may cause a join to drop a transaction, or a change may arrive behind the saved watermark.
+## Find a strategy
 
-Reconciliation compares the loaded result with what should be present, independently of the normal selection. Record the discrepancies before repairing them so you can assess the detection strategy and repair schedule. Agreement between gold and silver is useful, but it does not prove that silver captured every source change.
+### Bronze
 
-## Scope and maturity
+- [Full load](Bronze/Full%20Load.md): copy the entire source table again.
+- [CDC and change feeds](Bronze/CDC%20and%20Change%20Feed.md): let managed synchronization carry source changes into the lake.
+- [Partition-based incremental](Bronze/Partition-Based%20Incremental.md): use source timestamps to select rows or periods, with separate deletion detection.
 
-These articles focus on import semantic models; DirectQuery and Direct Lake are not yet developed here. Performance arguments describe where work occurs, rather than reporting benchmark results from a measured environment.
+### Silver
 
-`draft` articles retain unfinished implementation work. `working` articles describe approaches that still need validation in a real implementation. Several articles have no status label; that should not be read as evidence of validation. The snapshot patterns are exploratory, and source-provided history should be checked before building new history capture.
+- [Full load](Silver/Full%20Load.md): replace the warehouse copy when change or deletion signals are unreliable.
+- [Incremental with hard delete](Silver/Incremental%20with%20Hard%20Delete.md): upsert with Copy Data using a watermark and one-hour overlap; apply deleted keys separately.
 
-Start with the [pattern index](Pattern%20Index.md) for the available choices, [why deletions are hard](Why%20Deletions%20Are%20Hard.md) for the cross-layer problem, or [watermark strategy](Cross-Cutting/Watermark%20Strategy.md) for load boundaries. The [@ForceUpdate contract](Cross-Cutting/ForceUpdate%20Contract.md) connects routine loads, reconciliation, and rebuilds.
+### Gold
+
+- [Fact full load](Gold/Fact%20Full%20Load.md): replace the complete result when it fits the refresh window.
+- [Dimension load](Gold/Dimension%20Incremental%20Load.md): update attributes while preserving the primary keys facts reference.
+- [Incremental fact considerations](Gold/Incremental%20Fact%20Considerations.md): choose between inserts, upserts, period replacement, and selecting unfinished transactions.
+- [No-load direct semantic](Gold/No-Load%20Direct%20Semantic.md): the limited compromise of skipping persisted gold tables.
+
+### Semantic model
+
+- [Full refresh](Semantic%20Model/Full%20Load.md): our default for Power BI.
+- [Incremental refresh with deletions](Semantic%20Model/Power%20BI%20Incremental%20Refresh%20with%20Deletions.md): when full refresh is impractical, account for changes to older imported periods.
+
+### Snapshots
+
+- [Snapshot choices](Snapshots/Snapshots%20Overview.md): preserve earlier positions or observed versions when the source doesn't already keep the history you need.
+
+## Using and editing this library
+
+Article metadata describes readiness: `draft` means incomplete, `working` needs implementation validation, and `stable` means validated against a real implementation. An unlabelled article makes no validation claim. Examples explain the patterns; they aren't complete production implementations unless stated otherwise.
+
+[AGENTS.md](AGENTS.md) holds the writing guide and editing instructions. SQL follows [Cooptimize Standards](https://github.com/cooptimize/coop-standards), read from a sibling `../coop-standards/` checkout rather than copied here.
+
+The library includes an [Obsidian Publish theme](publish.css) and is licensed under [MIT](LICENSE).
